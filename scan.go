@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// todo: there is some stuff in here copied from another scanner that needs to be removed
-
 type TokenType int
 
 const (
@@ -41,26 +39,6 @@ const (
 	Identifier
 	String
 	Number
-
-	And
-	Class
-	Else
-	False
-	Fun
-	For
-	If
-	Nil
-	Or
-	Print
-	Stdin
-	Return
-	Super
-	This
-	True
-
-	TypeU32
-	TypeBool
-	TypeString
 
 	EOF
 )
@@ -119,42 +97,6 @@ func (t TokenType) String() string {
 		return "String"
 	case Number:
 		return "Number"
-	case And:
-		return "And"
-	case Class:
-		return "Class"
-	case Else:
-		return "Else"
-	case False:
-		return "False"
-	case Fun:
-		return "Fun"
-	case For:
-		return "For"
-	case If:
-		return "If"
-	case Nil:
-		return "Nil"
-	case Or:
-		return "Or"
-	case Print:
-		return "Print"
-	case Stdin:
-		return "Stdin"
-	case Return:
-		return "Return"
-	case Super:
-		return "Super"
-	case This:
-		return "This"
-	case True:
-		return "True"
-	case TypeU32:
-		return "TypeU32"
-	case TypeBool:
-		return "TypeBool"
-	case TypeString:
-		return "TypeString"
 	case EOF:
 		return "EOF"
 	default:
@@ -162,11 +104,36 @@ func (t TokenType) String() string {
 	}
 }
 
-// todo
-var keywords = map[string]TokenType{
-	// "and":    And,
-	// "or":     Or,
-}
+// it would be nice to use known keyword tokens for some identifiers, but
+// even reserved words can be used as column labels, so it may not be possible to know
+// until parsing: https://www.postgresql.org/docs/17/sql-keywords-appendix.html
+type Keyword = string
+
+const (
+	KeywordCreate Keyword = "create"
+	KeywordTable  Keyword = "table"
+
+	KeywordSelect Keyword = "select"
+	KeywordFrom   Keyword = "from"
+	KeywordWhere  Keyword = "where"
+	KeywordIn     Keyword = "in"
+	KeywordLimit  Keyword = "limit"
+	KeywordOrder  Keyword = "order"
+
+	KeywordAnd     Keyword = "and"
+	KeywordOr      Keyword = "or"
+	KeywordFor     Keyword = "for"
+	KeywordIf      Keyword = "if"
+	KeywordElse    Keyword = "else"
+	KeywordNull    Keyword = "null"
+	KeywordTrue    Keyword = "true"
+	KeywordFalse   Keyword = "false"
+	KeywordNot     Keyword = "not"
+	KeywordLike    Keyword = "like"
+	KeywordIs      Keyword = "is"
+	KeywordPrimary Keyword = "primary"
+	KeywordKey     Keyword = "key"
+)
 
 type Literal interface {
 	IsLiteral()
@@ -204,6 +171,10 @@ type Token struct {
 	Lexeme  string
 	Literal Literal
 	Line    int
+
+	// This is populated for all identifiers, and is needed
+	// to check if the input is a keyword.
+	LexemeLowered string
 }
 
 func (t Token) String() string {
@@ -470,12 +441,6 @@ func (s *Scanner) identifier() {
 		s.advance()
 	}
 
-	text := strings.ToLower(s.Source[s.start:s.current])
-	if t, ok := keywords[text]; ok {
-		s.addToken(t)
-		return
-	}
-
 	s.addToken(Identifier)
 }
 
@@ -576,6 +541,10 @@ func (s *Scanner) addTokenLiteral(t TokenType, literal Literal) {
 		Lexeme:  text,
 		Line:    s.line,
 		Literal: literal,
+	}
+
+	if t == Identifier {
+		token.LexemeLowered = strings.ToLower(text)
 	}
 
 	index := (s.BufferStart + s.BufferSize) % RingBufferSize

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 )
 
 // precedence high to low:
@@ -274,8 +273,7 @@ func (p *QueryParser) EndErrorMode() {
 	token := p.PeekToken()
 
 	for token.Type != EOF {
-		ident := strings.ToLower(token.Lexeme)
-		if token.Type == Identifier && (ident == "query" || ident == "fragment") {
+		if token.Type == Identifier && (token.LexemeLowered == "query" || token.LexemeLowered == "fragment") {
 			return
 		}
 
@@ -309,8 +307,7 @@ func (p *QueryParser) EatIdentifier(keyword string) Token {
 	}
 	token := p.EatTokenOfType(Identifier)
 
-	// todo: see if can remove all to lower calls
-	if strings.ToLower(token.Lexeme) != keyword {
+	if token.LexemeLowered != keyword {
 		p.AddError(fmt.Errorf("expected identifer type %s", keyword))
 	}
 
@@ -363,8 +360,7 @@ func (p *QueryParser) parseLiteral() Expression {
 	token := p.EatToken()
 
 	if token.Type == Identifier {
-		lowered := strings.ToLower(token.Lexeme)
-		if lowered == "null" {
+		if token.LexemeLowered == KeywordNull {
 			expr = Expression{
 				Type:             ExpressionTypeLiteral,
 				LiteralType:      LiteralTypeNull,
@@ -458,22 +454,20 @@ func (p *QueryParser) parseComparison() Expression {
 		opType = OpTypeLessOrEqual
 	} else if token.Type == GreaterEqual {
 		opType = OpTypeGreaterOrEqual
-	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "not" {
+	} else if token.Type == Identifier && token.LexemeLowered == KeywordNot {
 		// todo: something better, probably want to know all keyword combinations and how they map to ops
 		token = p.PeekToken()
-		keyword := strings.ToLower(token.Lexeme)
-		if token.Type == Identifier && keyword == "like" {
+		if token.Type == Identifier && token.LexemeLowered == KeywordLike {
 			opType = OpTypeNotLike
 		} else {
 			panic("not supported")
 		}
-	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "like" {
+	} else if token.Type == Identifier && token.LexemeLowered == KeywordLike {
 		opType = OpTypeLike
-	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "is" {
+	} else if token.Type == Identifier && token.LexemeLowered == KeywordIs {
 		opType = OpTypeIs
 		token = p.PeekToken()
-		keyword := strings.ToLower(token.Lexeme)
-		if token.Type == Identifier && keyword == "not" {
+		if token.Type == Identifier && token.LexemeLowered == KeywordNot {
 			opType = OpTypeIsNot
 		}
 	} else {
@@ -504,7 +498,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 		return p.parseComparison()
 	}
 
-	keyword := strings.ToLower(token.Lexeme)
+	keyword := token.LexemeLowered
 
 	var expr Expression
 	if keyword == "foreach" {
@@ -522,7 +516,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 			expr.ForLoopIteratorName = token.Lexeme
 
 			token = p.EatTokenOfType(Identifier)
-			if strings.ToLower(token.Lexeme) != "in" {
+			if token.LexemeLowered != KeywordIn {
 				panic("expected in")
 			}
 
@@ -533,10 +527,10 @@ func (p *QueryParser) parseDynamicClause() Expression {
 			token = p.EatTokenOfType(Colon)
 			token = p.EatTokenOfType(Identifier)
 
-			lowered := strings.ToLower(token.Lexeme)
-			if lowered == "and" {
+			lowered := token.LexemeLowered
+			if lowered == KeywordAnd {
 				expr.ForLoopJoinByOr = false
-			} else if lowered == "or" {
+			} else if lowered == KeywordOr {
 				expr.ForLoopJoinByOr = true
 			} else {
 				panic("must join for loop with AND or OR")
@@ -578,7 +572,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 		getMaybeBodyExpression := func() *Expression {
 			maybeLeftBrace := p.PeekToken()
 			maybeElse := p.PeekTokenAfter(1)
-			elseIsNext := maybeLeftBrace.Type == LeftBrace && maybeElse.Type == Identifier && strings.ToLower(maybeElse.Lexeme) == "else"
+			elseIsNext := maybeLeftBrace.Type == LeftBrace && maybeElse.Type == Identifier && maybeElse.LexemeLowered == KeywordElse
 
 			var bodyExpr *Expression
 			if elseIsNext {
@@ -605,7 +599,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 		for {
 			token = p.EatTokenOfType(LeftBrace)
 			token = p.EatTokenOfType(Identifier)
-			keyword = strings.ToLower(token.Lexeme)
+			keyword = token.LexemeLowered
 			if keyword != "else" {
 				break
 			}
@@ -614,7 +608,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 			if token.Type == RightBrace {
 				break
 			} else if token.Type == Identifier {
-				keyword = strings.ToLower(token.Lexeme)
+				keyword = token.LexemeLowered
 				if keyword == "if" {
 					_ = p.EatToken()
 
@@ -716,7 +710,7 @@ func (p *QueryParser) parseAnd() Expression {
 	token := p.PeekToken()
 
 	// todo: tokentype And/Or not used
-	for token.Type == Identifier && strings.ToLower(token.Lexeme) == "and" {
+	for token.Type == Identifier && token.LexemeLowered == KeywordAnd {
 		token = p.EatToken()
 
 		right := p.parseDynamicClause()
@@ -740,7 +734,7 @@ func (p *QueryParser) parseOr() Expression {
 
 	token := p.PeekToken()
 
-	for token.Type == Identifier && strings.ToLower(token.Lexeme) == "or" {
+	for token.Type == Identifier && token.LexemeLowered == KeywordOr {
 		token = p.EatToken()
 
 		right := p.parseAnd()
@@ -773,7 +767,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 	token := p.PeekToken()
 
 	// parse select fields
-	for !(token.Type == Identifier && strings.ToLower(token.Lexeme) == "from") {
+	for !(token.Type == Identifier && token.LexemeLowered == KeywordFrom) {
 		token = p.EatToken()
 
 		if token.Type == Star {
@@ -809,7 +803,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 	// optional where clause
 	token = p.PeekToken()
 
-	if token.Type == Identifier && strings.ToLower(token.Lexeme) == "where" {
+	if token.Type == Identifier && token.LexemeLowered == "where" {
 
 		// todo: try to cut down on error handling that needs to happen during parsing
 		// consume the where
@@ -823,11 +817,10 @@ func (p *QueryParser) parseSelect() SelectStmt {
 	token = p.PeekToken()
 
 	if token.Type == Identifier {
-		lowered := strings.ToLower(token.Lexeme)
-		if lowered == "limit" {
+		if token.LexemeLowered == KeywordLimit {
 			n := p.parseLimit()
 			stmt.Limit = n
-		} else if lowered == "order" {
+		} else if token.LexemeLowered == KeywordOrder {
 			sortFields := p.parseOrderBy()
 			stmt.OrderByFields = sortFields
 		}
@@ -929,7 +922,7 @@ func (p *QueryParser) parseQuery(isFragment bool) {
 	} else {
 		token = p.EatTokenOfType(Identifier)
 
-		if strings.ToLower(token.Lexeme) == "select" {
+		if token.LexemeLowered == KeywordSelect {
 			selectStmt := p.parseSelect()
 
 			query.StatementType = StatementTypeSelect

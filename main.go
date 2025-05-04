@@ -4,7 +4,6 @@ package main
 // - test invalid queries and error handling
 // 	 - better interface - config + command, end to end test driven by go generate, to see actual interface for errors
 //   - ensure operator is valid with left and right, and left/right both same type
-//   - remove ToLower calls everwhere with raw string identifier checks
 // - should be able to vastly simplify generated simple_select_comparisons.go
 // - see if escape hatch is doable
 // - allow putting a select query in a fragment

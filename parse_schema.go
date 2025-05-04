@@ -141,23 +141,22 @@ func (p *SchemaParser) parseTableField() TableField {
 		token = p.EatTokenOfType(Identifier)
 
 		// todo: look at efficient lookups
-		lower := strings.ToLower(token.Lexeme)
-		switch lower {
-		case "primary":
+		switch token.LexemeLowered {
+		case KeywordPrimary:
 			token = p.EatTokenOfType(Identifier)
 
-			if strings.ToLower(token.Lexeme) == "key" {
+			if token.LexemeLowered == KeywordKey {
 				field.PrimaryKey = true
 			} else {
 				// todo
 				panic("not supported")
 			}
-		case "null":
+		case KeywordNull:
 			field.NotNull = false
-		case "not":
+		case KeywordNot:
 			token = p.EatTokenOfType(Identifier)
 
-			if strings.ToLower(token.Lexeme) == "null" {
+			if token.LexemeLowered == KeywordNull {
 				field.NotNull = true
 			} else {
 				// todo
@@ -205,15 +204,13 @@ func (p *SchemaParser) Parse() {
 	for p.Scanner.HasNextToken() {
 		token := p.EatToken()
 
-		if token.Type != Identifier && strings.ToLower(token.Lexeme) != "create" {
-			// todo
-			panic("")
+		if token.Type != Identifier && token.LexemeLowered != KeywordCreate {
+			panic(fmt.Errorf("expected create, got %s", token.Lexeme))
 		}
 
 		token = p.EatToken()
-		if token.Type != Identifier && strings.ToLower(token.Lexeme) != "table" {
-			// todo
-			panic("")
+		if token.Type != Identifier && token.LexemeLowered != KeywordTable {
+			panic(fmt.Errorf("expected table, got %s", token.Lexeme))
 		}
 
 		p.parseTable()

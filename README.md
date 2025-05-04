@@ -9,12 +9,12 @@ A templating system for building SQL queries in Go.
 generating clauses, into query-building code that builds SQL dynamically based on input.
 
 ## Design Goals
+
 - Building queries should look as similar as possible to writing raw SQL,
   but maintaining the benefit of safety that query builders provide.
 - Provide more safety than typical query builders with checks during code generation
   that are aware of your schema.
-- Provide minimal, fast generated output that does the minimum necessary to build queries.
-
+- Provide minimal, fast generated output that is hard to beat for efficiency.
 
 ## Current Status
 
