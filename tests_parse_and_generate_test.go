@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestGenerateSelect(t *testing.T) {
+func TestGeneration(t *testing.T) {
 
 	schema := `
 	CREATE TABLE authors (
@@ -142,7 +142,6 @@ func TestGenerateSelect(t *testing.T) {
 			expectResultFile: "tests_sample_select_more_complex_where.go",
 		},
 
-		// foreach can be placed on the left or right or an And/Or
 		{
 			name: "select with loop over input",
 			queries: `
@@ -263,6 +262,48 @@ func TestGenerateSelect(t *testing.T) {
 			expectErrors:     []error{ErrFragmentParamMismatch},
 			expectResultFile: "",
 		},
+
+		{
+			name: "select with if statement - equality",
+			queries: `
+						query GetAuthorIfStatement(bioOptional: string?) {
+							SELECT id FROM authors
+							WHERE
+								{if bioOptional IS NULL}
+									bio IS NULL
+								{else if bioOptional = "specialValue"}
+								{else}
+									bio = {bioOptional}
+								{end}
+						}
+					`,
+			expectErrors:     nil,
+			expectResultFile: "tests_sample_select_if_statement_equality.go",
+		},
+
+		{
+			name: "select with if statement - multiple joined",
+			queries: `
+						query GetAuthorIfStatementMultipleJoined(bioOptional: string?, id: int?) {
+							SELECT id FROM authors
+							WHERE
+								{if id is NULL}
+									id IS NULL
+								{end}
+
+								AND
+
+								{if bioOptional IS NULL}
+									bio IS NULL
+								{else if bioOptional = "specialValue"}
+								{else}
+									bio = {bioOptional}
+								{end}
+						}
+					`,
+			expectErrors:     nil,
+			expectResultFile: "tests_sample_select_if_statement_multiple_joined.go",
+		},
 	}
 
 	for _, test := range testCases {
@@ -274,7 +315,7 @@ func TestGenerateSelect(t *testing.T) {
 			queryParser := NewQueryParser(test.queries)
 			queryParser.Parse()
 
-			checkErrors := checkQueries(schemaParser.Result, queryParser.Result)
+			checkErrors := CheckQueries(schemaParser.Result, queryParser.Result)
 			if len(test.expectErrors) != len(checkErrors) {
 				t.Log(test.expectErrors, checkErrors)
 				t.Fatalf("expected %d errors, got %d", len(test.expectErrors), len(checkErrors))
@@ -287,7 +328,7 @@ func TestGenerateSelect(t *testing.T) {
 			}
 
 			if len(checkErrors) == 0 {
-				generated, err := generate(schemaParser.Result, queryParser.Result)
+				generated, err := Generate(schemaParser.Result, queryParser.Result)
 				if err != nil {
 					// allow continuing in case it's an error while formatting
 					t.Errorf("got error: %s", err)
@@ -298,14 +339,14 @@ func TestGenerateSelect(t *testing.T) {
 				if test.expectResultFile != "" {
 					file, err := os.ReadFile(test.expectResultFile)
 					if err != nil {
-						t.FailNow()
+						t.Fatalf("error reading file: %s", err)
 					}
 					expectedResult = string(file)
 				}
 
 				expectedResultFormatted, err := format.Source([]byte(expectedResult))
 				if err != nil {
-					t.FailNow()
+					t.Fatalf("error formatting: %s", err)
 				}
 				expectedResult = string(expectedResultFormatted)
 
@@ -480,6 +521,97 @@ func TestGeneratedSelects(t *testing.T) {
 		query, args := QueryGetAuthorWithFragment(GetAuthorWithFragmentInput{bioLike: "bio", bioLikeOptional: nil})
 		assertQuery(t,
 			"SELECT id FROM authors WHERE id = 1 AND (bio LIKE $1) LIMIT 1;",
+			[]interface{}{"bio"},
+			query,
+			args,
+		)
+	})
+
+	// query GetAuthorIfStatement(bioOptional: string?) {
+	// 	SELECT id FROM authors
+	// 		WHERE
+	// 			{if bioOptional == nil}
+	// 			bio IS NULL
+	// 			{else if bioOptional == "specialValue"}
+	// 			{else}
+	// 			bio = {bioLike}
+	// 			{end}
+	// }
+	t.Run("select with if statement equality - is null check", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatement(GetAuthorIfStatementInput{bioOptional: nil})
+		assertQuery(t,
+			"SELECT id FROM authors WHERE bio IS NULL;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+	t.Run("select with if statement equality - empty statement", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatement(GetAuthorIfStatementInput{bioOptional: ptr("specialValue")})
+		assertQuery(t,
+			"SELECT id FROM authors;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+	t.Run("select with if statement equality - any other value", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatement(GetAuthorIfStatementInput{bioOptional: ptr("bio")})
+		assertQuery(t,
+			"SELECT id FROM authors WHERE bio = $1;",
+			[]interface{}{"bio"},
+			query,
+			args,
+		)
+	})
+
+	// query GetAuthorIfStatementMultipleJoined(bioOptional: string?, id: int?) {
+	// 	SELECT id FROM authors
+	// 	WHERE
+	// 		{if id is NULL}
+	// 			id IS NULL
+	// 		{end}
+
+	// 		AND
+
+	// 		{if bioOptional IS NULL}
+	// 			bio IS NULL
+	// 		{else if bioOptional = "specialValue"}
+	// 		{else}
+	// 			bio = {bioOptional}
+	// 		{end}
+	// }
+	t.Run("select with if statement equality - is null check", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatementMultipleJoined(GetAuthorIfStatementMultipleJoinedInput{bioOptional: nil, id: nil})
+		assertQuery(t,
+			"SELECT id FROM authors WHERE id IS NULL AND bio IS NULL;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+	t.Run("select with if statement equality - empty statement", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatementMultipleJoined(GetAuthorIfStatementMultipleJoinedInput{bioOptional: ptr("specialValue"), id: nil})
+		assertQuery(t,
+			"SELECT id FROM authors WHERE id IS NULL;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+	t.Run("select with if statement equality - multiple empty statements", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatementMultipleJoined(GetAuthorIfStatementMultipleJoinedInput{bioOptional: ptr("specialValue"), id: ptr(3)})
+		assertQuery(t,
+			"SELECT id FROM authors;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+	t.Run("select with if statement equality - empty ID check", func(t *testing.T) {
+		query, args := QueryGetAuthorIfStatementMultipleJoined(GetAuthorIfStatementMultipleJoinedInput{bioOptional: ptr("bio"), id: ptr(3)})
+		assertQuery(t,
+			"SELECT id FROM authors WHERE bio = $1;",
 			[]interface{}{"bio"},
 			query,
 			args,

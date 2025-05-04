@@ -271,7 +271,7 @@ func (s *Scanner) PeekTokenAfter(n int) (Token, error) {
 		s.scanToken()
 	}
 
-	return s.TokenRingBuffer[s.BufferStart+n], nil
+	return s.TokenRingBuffer[(s.BufferStart+n)%RingBufferSize], nil
 }
 
 func (s *Scanner) EatToken() (Token, error) {

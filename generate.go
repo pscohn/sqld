@@ -16,6 +16,70 @@ type Generator struct {
 	LiteralIndex int
 }
 
+// handles generating ops within template expressions (Go syntax).
+// eventually we abstracted pattern for generators targeting different languages
+func OpTypeToGoString(opType OpType) string {
+	var op string
+	switch opType {
+	case OpTypeAnd:
+		op = "&&"
+	case OpTypeOr:
+		op = "||"
+	case OpTypeEquals:
+		op = "=="
+	case OpTypeNotEquals:
+		op = "!="
+	case OpTypeLike:
+		panic("not supported")
+	case OpTypeNotLike:
+		panic("not supported")
+	case OpTypeIs:
+		op = "=="
+	case OpTypeIsNot:
+		op = "!="
+	default:
+		panic("unhandled op")
+	}
+	return op
+}
+
+func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, schema Schema, params []Param, exp Expression, isPointerComparison bool) {
+	switch exp.LiteralType {
+	case LiteralTypeNull:
+		sb.WriteString("nil")
+	case LiteralTypeString:
+		sb.WriteString(exp.LiteralString)
+	case LiteralTypeNumber:
+		sb.WriteString(fmt.Sprintf("%d", exp.LiteralNumber))
+	case LiteralTypeFieldName:
+		panic("invalid literal type for template expression")
+	case LiteralTypeVariable:
+		maybePointer := ""
+		if !exp.IsClauseRequired && !isPointerComparison {
+			maybePointer = "*"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s%s", maybePointer, exp.LiteralFieldName))
+	default:
+		panic("unhandled literal type")
+	}
+}
+
+func (g *Generator) writeTemplateExpressionBinary(sb *strings.Builder, schema Schema, params []Param, exp Expression) {
+	op := OpTypeToGoString(exp.Op)
+
+	isPointerComparison := false
+	if exp.Left.LiteralType == LiteralTypeNull || exp.Right.LiteralType == LiteralTypeNull {
+		isPointerComparison = true
+	}
+
+	sb.WriteString("(")
+	g.writeTemplateExpressionLiteral(sb, schema, params, *exp.Left, isPointerComparison)
+	sb.WriteString(fmt.Sprintf(" %s ", op))
+	g.writeTemplateExpressionLiteral(sb, schema, params, *exp.Right, isPointerComparison)
+	sb.WriteString(")")
+}
+
 func (g *Generator) startGroup(sb *strings.Builder) {
 	g.GroupIndex++
 	sb.WriteString(fmt.Sprintf("\tgroupClause%d := make([]string, 0, 2)\n\n", g.GroupIndex))
@@ -34,6 +98,12 @@ func (g *Generator) endGroup(sb *strings.Builder, groupIndex int, op string, add
 
 func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Param, exp Expression) {
 	switch exp.LiteralType {
+	case LiteralTypeNull:
+		g.LiteralIndex++
+		sb.WriteString(fmt.Sprintf("\tlit%d := \"NULL\"\n", g.LiteralIndex))
+	case LiteralTypeString:
+		g.LiteralIndex++
+		sb.WriteString(fmt.Sprintf("\tlit%d := \"'%s'\"\n", g.LiteralIndex, exp.LiteralString))
 	case LiteralTypeNumber:
 		g.LiteralIndex++
 		sb.WriteString(fmt.Sprintf("\tlit%d := \"%d\"\n", g.LiteralIndex, exp.LiteralNumber))
@@ -56,30 +126,9 @@ func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Pa
 	}
 }
 
-func opToString(opType OpType) string {
-	var op string
-	switch opType {
-	case OpTypeAnd:
-		op = "AND"
-	case OpTypeOr:
-		op = "OR"
-	case OpTypeEquals:
-		op = "="
-	case OpTypeNotEquals:
-		op = "!="
-	case OpTypeLike:
-		op = "LIKE"
-	case OpTypeNotLike:
-		op = "NOT LIKE"
-	default:
-		panic("unhandled op")
-	}
-	return op
-}
-
 func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
 	// todo: consider using a lexeme we should already have validated
-	op := opToString(exp.Op)
+	op := exp.Op.String()
 
 	if exp.Left.Type == ExpressionTypeLiteral && exp.Right.Type == ExpressionTypeLiteral {
 		// should not start a group, but clause may not be required.
@@ -152,6 +201,34 @@ func (g *Generator) writeForLoop(sb *strings.Builder, schema Schema, params []Pa
 	sb.WriteString("\t}\n\n")
 }
 
+func (g *Generator) writeIf(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
+	for i, elseif := range exp.ElseIfs {
+		exprStart := "} else if "
+		if i == 0 {
+			exprStart = "if "
+		}
+		sb.WriteString(exprStart)
+
+		// write literals to string
+		// could be a deeply nested expression
+		// kind of want to call writeBinary but output to a static string
+		g.writeTemplateExpressionBinary(sb, schema, params, *elseif.IfExpr)
+
+		sb.WriteString(" {\n")
+
+		if elseif.BodyExpr != nil {
+			g.writeExpression(sb, schema, params, *elseif.BodyExpr, addToGroupClauseNum)
+		}
+	}
+
+	if exp.ElseBody != nil {
+		sb.WriteString("} else {\n")
+		g.writeExpression(sb, schema, params, *exp.ElseBody, addToGroupClauseNum)
+	}
+
+	sb.WriteString("\t}\n\n")
+}
+
 // todo: probably will want some object to encapuslate context
 // of params, current table, etc
 func (g *Generator) writeExpression(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
@@ -162,6 +239,8 @@ func (g *Generator) writeExpression(sb *strings.Builder, schema Schema, params [
 		g.writeBinary(sb, schema, params, exp, addToGroupClauseNum)
 	case ExpressionTypeForLoop:
 		g.writeForLoop(sb, schema, params, exp, addToGroupClauseNum)
+	case ExpressionTypeIf:
+		g.writeIf(sb, schema, params, exp, addToGroupClauseNum)
 	case ExpressionTypeFragment:
 		panic("expected fragment to be expanded into expression")
 	default:
@@ -266,7 +345,7 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-func generate(schema Schema, queries Queries) (string, error) {
+func Generate(schema Schema, queries Queries) (string, error) {
 	// todo: preallocate
 	result := []byte{}
 	var err error

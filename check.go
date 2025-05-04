@@ -122,6 +122,25 @@ func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []Check
 
 		errors = append(errors, exprLeftErrors...)
 
+	case ExpressionTypeIf:
+		for _, elseif := range expr.ElseIfs {
+			ifExpr, ifExprErrs := checkExpr(table, scope, elseif.IfExpr)
+			errors = append(errors, ifExprErrs...)
+			elseif.IfExpr = ifExpr
+
+			if elseif.BodyExpr != nil {
+				bodyExpr, bodyExprErrs := checkExpr(table, scope, elseif.BodyExpr)
+				errors = append(errors, bodyExprErrs...)
+				elseif.BodyExpr = bodyExpr
+			}
+		}
+
+		if expr.ElseBody != nil {
+			bodyExpr, bodyExprErrs := checkExpr(table, scope, expr.ElseBody)
+			errors = append(errors, bodyExprErrs...)
+			expr.ElseBody = bodyExpr
+		}
+
 	case ExpressionTypeFragment:
 		fragment, e := checkFragment(scope, expr.FragmentName)
 		if e.Err != nil {
@@ -183,6 +202,9 @@ func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []Check
 		// replace expressions - a fragment may have been substituted by a new expression with rewritten variables
 		expr.Left = exprLeft
 		expr.Right = exprRight
+
+		// todo: validate that IS/IS NOT is only with true, false, or null etc
+		// and other similar validations
 
 		expr.IsClauseRequired = expr.Left.IsClauseRequired || expr.Right.IsClauseRequired
 	case ExpressionTypeLiteral:
@@ -267,7 +289,7 @@ func checkQuery(schema Schema, fragments []Query, query *Query) []CheckError {
 
 }
 
-func checkQueries(schema Schema, queries Queries) []CheckError {
+func CheckQueries(schema Schema, queries Queries) []CheckError {
 	var errors []CheckError
 
 	fragments := make([]Query, 0, len(queries.Queries))

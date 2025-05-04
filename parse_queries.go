@@ -12,7 +12,7 @@ import (
 // add/subtract
 // comparison (<, >, <=, >=)
 // equality (=, !=, like)
-// dynamic clause - {foreach}, {include}
+// dynamic clause - {foreach}, {include}, {if}
 // and
 // or
 
@@ -26,7 +26,34 @@ const (
 	OpTypeNotEquals
 	OpTypeLike
 	OpTypeNotLike
+	OpTypeIs
+	OpTypeIsNot
 )
+
+func (opType OpType) String() string {
+	var op string
+	switch opType {
+	case OpTypeAnd:
+		op = "AND"
+	case OpTypeOr:
+		op = "OR"
+	case OpTypeEquals:
+		op = "="
+	case OpTypeNotEquals:
+		op = "!="
+	case OpTypeLike:
+		op = "LIKE"
+	case OpTypeNotLike:
+		op = "NOT LIKE"
+	case OpTypeIs:
+		op = "IS"
+	case OpTypeIsNot:
+		op = "IS NOT"
+	default:
+		panic("unhandled op")
+	}
+	return op
+}
 
 type StatementType int
 
@@ -41,6 +68,7 @@ const (
 	ExpressionTypeNone ExpressionType = iota
 	ExpressionTypeBinary
 	ExpressionTypeLiteral
+	ExpressionTypeIf
 	ExpressionTypeForLoop
 	ExpressionTypeFragment
 )
@@ -53,7 +81,13 @@ const (
 	LiteralTypeNumber
 	LiteralTypeFieldName
 	LiteralTypeVariable
+	LiteralTypeNull
 )
+
+type ElseIf struct {
+	IfExpr   *Expression
+	BodyExpr *Expression
+}
 
 type Expression struct {
 	Op    OpType
@@ -65,6 +99,7 @@ type Expression struct {
 	// literal expression type
 	LiteralType        LiteralType
 	LiteralNumber      int
+	LiteralString      string
 	LiteralFieldName   string // this will get rewritten by checker to reference a globally unique name (including across fragments)
 	IsQueryScopedParam bool
 
@@ -78,6 +113,10 @@ type Expression struct {
 	ForLoopIteratorName string // the name for each item in the list. this may be rewitten by checker
 	ForLoopVarName      string // the list param we're ranging over. this may be rewritten by checker
 	ForLoopJoinByOr     bool   // defaults to AND, set to true for OR
+
+	// If expression
+	ElseIfs  []ElseIf
+	ElseBody *Expression
 
 	// fragment expression type
 	FragmentName string
@@ -150,6 +189,10 @@ type QueryParser struct {
 	Result Queries
 
 	Index int
+
+	// controls behavior of expression parser -
+	// should assume identifiers are variables instead of field names
+	IsParsingTemplate bool
 
 	Scanner    Scanner
 	TokenIndex int
@@ -304,11 +347,25 @@ func (p *QueryParser) parseLiteral() Expression {
 	token := p.EatToken()
 
 	if token.Type == Identifier {
-		expr = Expression{
-			Type:             ExpressionTypeLiteral,
-			LiteralType:      LiteralTypeFieldName,
-			LiteralFieldName: token.Lexeme,
-			IsClauseRequired: true,
+		lowered := strings.ToLower(token.Lexeme)
+		if lowered == "null" {
+			expr = Expression{
+				Type:             ExpressionTypeLiteral,
+				LiteralType:      LiteralTypeNull,
+				IsClauseRequired: true,
+			}
+		} else {
+			litType := LiteralTypeFieldName
+			if p.IsParsingTemplate {
+				litType = LiteralTypeVariable
+			}
+
+			expr = Expression{
+				Type:             ExpressionTypeLiteral,
+				LiteralType:      litType,
+				LiteralFieldName: token.Lexeme,
+				IsClauseRequired: true,
+			}
 		}
 	} else if token.Type == Number {
 		number, ok := token.Literal.(NumberLiteral)
@@ -331,7 +388,12 @@ func (p *QueryParser) parseLiteral() Expression {
 
 		token = p.EatTokenOfType(RightBrace)
 
-		// } else if token.Type == String {
+	} else if token.Type == String {
+		expr = Expression{
+			Type:          ExpressionTypeLiteral,
+			LiteralType:   LiteralTypeString,
+			LiteralString: token.Lexeme,
+		}
 
 		// todo: handle patterns for like clauses
 		// "'%{bioLike}%'"
@@ -373,8 +435,25 @@ func (p *QueryParser) parseEquality() Expression {
 		opType = OpTypeEquals
 	} else if token.Type == BangEqual {
 		opType = OpTypeNotEquals
+	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "not" {
+		// todo: something better, probably want to know all keyword combinations and how they map to ops
+		token = p.PeekToken()
+		keyword := strings.ToLower(token.Lexeme)
+		if token.Type == Identifier && keyword == "like" {
+			opType = OpTypeNotLike
+		} else {
+			panic("not supported")
+		}
 	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "like" {
 		opType = OpTypeLike
+	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "is" {
+		opType = OpTypeIs
+		token = p.PeekToken()
+		keyword := strings.ToLower(token.Lexeme)
+		if token.Type == Identifier && keyword == "not" {
+			opType = OpTypeIsNot
+		}
+
 	} else {
 		return left
 	}
@@ -404,9 +483,6 @@ func (p *QueryParser) parseDynamicClause() Expression {
 	}
 
 	keyword := strings.ToLower(token.Lexeme)
-	if keyword != "foreach" && keyword != "include" {
-		return p.parseEquality()
-	}
 
 	var expr Expression
 	if keyword == "foreach" {
@@ -461,6 +537,109 @@ func (p *QueryParser) parseDynamicClause() Expression {
 
 			token = p.EatTokenOfType(RightBrace)
 		}
+
+	} else if keyword == "if" {
+		expr.Type = ExpressionTypeIf
+		// parse opening
+		// 	{if field == nil}
+		// eat {
+		_ = p.EatToken()
+		// eat if
+		_ = p.EatToken()
+
+		// parse non-sql expression
+		p.IsParsingTemplate = true
+		ifExpr := p.parseExpression()
+		p.IsParsingTemplate = false
+		token = p.EatTokenOfType(RightBrace)
+
+		getMaybeBodyExpression := func() *Expression {
+			maybeLeftBrace := p.PeekToken()
+			maybeElse := p.PeekTokenAfter(1)
+			elseIsNext := maybeLeftBrace.Type == LeftBrace && maybeElse.Type == Identifier && strings.ToLower(maybeElse.Lexeme) == "else"
+
+			var bodyExpr *Expression
+			if elseIsNext {
+				// no inner body
+				return nil
+			} else {
+				innerExpr := p.parseExpression()
+				if innerExpr.Type != ExpressionTypeNone {
+					bodyExpr = &innerExpr
+				}
+			}
+
+			return bodyExpr
+		}
+
+		bodyResult := getMaybeBodyExpression()
+
+		expr.ElseIfs = append(expr.ElseIfs, ElseIf{
+			IfExpr:   &ifExpr,
+			BodyExpr: bodyResult,
+		})
+
+		// parse optional else-ifs
+		for {
+			token = p.EatTokenOfType(LeftBrace)
+			token = p.EatTokenOfType(Identifier)
+			keyword = strings.ToLower(token.Lexeme)
+			if keyword != "else" {
+				break
+			}
+
+			token = p.PeekToken()
+			if token.Type == RightBrace {
+				break
+			} else if token.Type == Identifier {
+				keyword = strings.ToLower(token.Lexeme)
+				if keyword == "if" {
+					_ = p.EatToken()
+
+					p.IsParsingTemplate = true
+					ifExpr := p.parseExpression()
+					p.IsParsingTemplate = false
+
+					token = p.EatTokenOfType(RightBrace)
+
+					bodyExpr := getMaybeBodyExpression()
+
+					expr.ElseIfs = append(expr.ElseIfs, ElseIf{
+						IfExpr:   &ifExpr,
+						BodyExpr: bodyExpr,
+					})
+				} else {
+					p.AddError(fmt.Errorf("expected 'if' or '}' after 'else'"))
+				}
+			}
+		}
+
+		if keyword == "else" {
+			token = p.EatToken()
+			if token.Type == RightBrace {
+
+				// body of else
+				innerExpr := p.parseExpression()
+
+				if innerExpr.Type != ExpressionTypeNone {
+					expr.ElseBody = &innerExpr
+				}
+
+				_ = p.EatTokenOfType(LeftBrace)
+				_ = p.EatIdentifier("end")
+				_ = p.EatTokenOfType(RightBrace)
+
+			} else if token.Type == Identifier {
+
+			} else {
+				p.AddError(fmt.Errorf("expected 'if' or '}' after 'else'"))
+			}
+
+		} else if keyword == "end" {
+			token = p.EatTokenOfType(RightBrace)
+		} else {
+			p.AddError(fmt.Errorf("expected 'else' or 'end'"))
+		}
 	} else if keyword == "include" {
 
 		// eat {
@@ -500,7 +679,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 		expr.FragmentArgs = args
 
 	} else {
-		panic("unexpected keyword")
+		return p.parseEquality()
 	}
 
 	return expr
@@ -687,7 +866,7 @@ func (p *QueryParser) parseQuery(isFragment bool) {
 			case "int":
 				param.Type = ParamTypeNumber
 			default:
-				panic("")
+				p.AddError(fmt.Errorf("unrecognized type: %s", token.Lexeme))
 			}
 
 			// todo: really clean up this, should be much fewer lines to write this

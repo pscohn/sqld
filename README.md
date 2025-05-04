@@ -26,6 +26,10 @@ Currently focused on building full support for Postgres.
 - [x] Fragments for sharing SQL clauses between queries
 - [ ] Full support for Postgres SQL
 
+## How to Use
+
+TODO
+
 ## Examples
 
 ### Define Schema
@@ -66,7 +70,7 @@ Call with this code:
 
 ```go
 query, args := QueryGetAuthorWithVariable(GetAuthorWithVariableInput{id: "32"})
-// query = "SELECT id FROM authors WHERE id = $1 LIMIT 1;
+// query = "SELECT id FROM authors WHERE id = $1 LIMIT 1;"
 // args = []interface{}{"32"}
 ```
 
@@ -87,7 +91,7 @@ Call with this code:
 
 ```go
 query, args := QueryGetAuthorWithVariable(GetAuthorWithVariableInput{id: nil})
-// query = "SELECT id FROM authors LIMIT 1;
+// query = "SELECT id FROM authors LIMIT 1;"
 // args = []interface{}{}
 ```
 
@@ -103,11 +107,41 @@ This works with more complex nested expression (excuse the contrived example):
 
 ```go
 query, args := QueryGetAuthorWithVariable(GetAuthorWithVariableInput{id: "10", bio: nil})
-// query = "SELECT id FROM authors WHERE id = $1 OR (id > $2 AND (id < $3)) LIMIT 1;
+// query = "SELECT id FROM authors WHERE id = $1 OR (id > $2 AND (id < $3)) LIMIT 1;"
 // args = []interface{}{"10", "10", "10"}
 ```
 
-### Range clauses
+### `if` statements
+
+Any expression can be surrounded with an if statement, which uses the same SQL syntaxes
+but only has access to the data in the template itself.
+
+```sql
+query GetAuthorIfStatementMultipleJoined(bioOptional: string?, id: int?) {
+	SELECT id FROM authors
+	WHERE
+		{if id is NULL}
+			id IS NULL
+		{end}
+
+		AND
+
+		{if bioOptional IS NULL}
+			bio IS NULL
+		{else if bioOptional = "specialValue"}
+		{else}
+			bio = {bioOptional}
+		{end}
+}
+```
+
+```go
+query, args := QueryGetAuthorIfStatementMultipleJoined(GetAuthorIfStatementMultipleJoinedInput{bioOptional: ptr("specialValue"), id: nil})
+// query = "SELECT id FROM authors WHERE id IS NULL;"
+// args = interface{}{}
+```
+
+### `foreach` statements
 
 You can iterate over a list input to generate multiple clauses.
 
