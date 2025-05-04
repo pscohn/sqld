@@ -29,6 +29,14 @@ func OpTypeToGoString(opType OpType) string {
 		op = "=="
 	case OpTypeNotEquals:
 		op = "!="
+	case OpTypeLess:
+		op = "<"
+	case OpTypeGreater:
+		op = ">"
+	case OpTypeLessOrEqual:
+		op = "<="
+	case OpTypeGreaterOrEqual:
+		op = ">="
 	case OpTypeLike:
 		panic("not supported")
 	case OpTypeNotLike:

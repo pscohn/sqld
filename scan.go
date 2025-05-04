@@ -398,6 +398,9 @@ func (s *Scanner) scanToken() error {
 		t := Less
 		if s.match('=') {
 			t = LessEqual
+		} else if s.match('>') {
+			// rewrite to !=
+			t = BangEqual
 		}
 		s.addToken(t)
 	case ">":

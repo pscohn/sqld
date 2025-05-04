@@ -51,6 +51,17 @@ func TestGeneration(t *testing.T) {
 			// `,
 		},
 		{
+			name: "simple select - comparison checks",
+			queries: `
+				query GetAuthorSimpleSelectComparisons {
+					SELECT id FROM authors
+					WHERE id = 5 OR id < 5 OR id > 5 OR id != 5 OR id <> 5 OR id <= 5 OR id >= 5
+				}
+			`,
+			expectErrors:     nil,
+			expectResultFile: "tests_sample_simple_select_comparisons.go",
+		},
+		{
 			name: "simple select with unknown table",
 			queries: `
 				query GetAuthorUnknownTable {

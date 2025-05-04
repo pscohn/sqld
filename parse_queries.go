@@ -22,8 +22,14 @@ const (
 	OpTypeNone OpType = iota
 	OpTypeAnd
 	OpTypeOr
+
+	OpTypeLess
+	OpTypeGreater
+	OpTypeLessOrEqual
+	OpTypeGreaterOrEqual
 	OpTypeEquals
 	OpTypeNotEquals
+
 	OpTypeLike
 	OpTypeNotLike
 	OpTypeIs
@@ -37,10 +43,20 @@ func (opType OpType) String() string {
 		op = "AND"
 	case OpTypeOr:
 		op = "OR"
+
+	case OpTypeLess:
+		op = "<"
+	case OpTypeGreater:
+		op = ">"
+	case OpTypeLessOrEqual:
+		op = "<="
+	case OpTypeGreaterOrEqual:
+		op = ">="
 	case OpTypeEquals:
 		op = "="
 	case OpTypeNotEquals:
 		op = "!="
+
 	case OpTypeLike:
 		op = "LIKE"
 	case OpTypeNotLike:
@@ -424,8 +440,7 @@ func (p *QueryParser) parseGrouping() Expression {
 	return p.parseLiteral()
 }
 
-func (p *QueryParser) parseEquality() Expression {
-	// todo: this will be comparison instead of grouping
+func (p *QueryParser) parseComparison() Expression {
 	left := p.parseGrouping()
 	token := p.PeekToken()
 
@@ -435,6 +450,14 @@ func (p *QueryParser) parseEquality() Expression {
 		opType = OpTypeEquals
 	} else if token.Type == BangEqual {
 		opType = OpTypeNotEquals
+	} else if token.Type == Less {
+		opType = OpTypeLess
+	} else if token.Type == Greater {
+		opType = OpTypeGreater
+	} else if token.Type == LessEqual {
+		opType = OpTypeLessOrEqual
+	} else if token.Type == GreaterEqual {
+		opType = OpTypeGreaterOrEqual
 	} else if token.Type == Identifier && strings.ToLower(token.Lexeme) == "not" {
 		// todo: something better, probably want to know all keyword combinations and how they map to ops
 		token = p.PeekToken()
@@ -453,7 +476,6 @@ func (p *QueryParser) parseEquality() Expression {
 		if token.Type == Identifier && keyword == "not" {
 			opType = OpTypeIsNot
 		}
-
 	} else {
 		return left
 	}
@@ -473,13 +495,13 @@ func (p *QueryParser) parseDynamicClause() Expression {
 	token := p.PeekToken()
 	if token.Type != LeftBrace {
 		// not starting a dynamic clause - passthrough
-		return p.parseEquality()
+		return p.parseComparison()
 	}
 
 	token = p.PeekTokenAfter(1)
 
 	if token.Type != Identifier {
-		return p.parseEquality()
+		return p.parseComparison()
 	}
 
 	keyword := strings.ToLower(token.Lexeme)
@@ -679,7 +701,7 @@ func (p *QueryParser) parseDynamicClause() Expression {
 		expr.FragmentArgs = args
 
 	} else {
-		return p.parseEquality()
+		return p.parseComparison()
 	}
 
 	return expr
