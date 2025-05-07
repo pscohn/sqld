@@ -28,7 +28,30 @@ Currently focused on improving support for Postgres SQL.
 
 ## How to Use
 
-TODO
+Configuration is limited and finnicky right now; this will be fixed in the future.
+
+Install sqld:
+
+```
+go get github.com/pscohn/sqld
+```
+
+Define an `sqld.conf` file:
+
+```
+schema_path = "schema.sql"
+query_path = "queries.sql"
+output_path = "output.go"
+output_package = "subpkg"
+```
+
+In the same directory, add a tag for `go generate`:
+
+```
+//go:generate sqld
+```
+
+Then run `go generate` from the same directory, or `go generate ./...` from a parent.
 
 ## Examples
 

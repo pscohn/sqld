@@ -339,7 +339,7 @@ func TestGeneration(t *testing.T) {
 			}
 
 			if len(checkErrors) == 0 {
-				generated, err := Generate(schemaParser.Result, queryParser.Result)
+				generated, err := Generate(schemaParser.Result, queryParser.Result, "main")
 				if err != nil {
 					// allow continuing in case it's an error while formatting
 					t.Errorf("got error: %s", err)

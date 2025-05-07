@@ -353,7 +353,7 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-func Generate(schema Schema, queries Queries) (string, error) {
+func Generate(schema Schema, queries Queries, outputPackage string) (string, error) {
 	// todo: preallocate
 	result := []byte{}
 	var err error
@@ -363,7 +363,7 @@ func Generate(schema Schema, queries Queries) (string, error) {
 			continue
 		}
 		g := Generator{}
-		g.PackageName = "main"
+		g.PackageName = outputPackage
 		result, err = g.generateQuery(schema, q)
 		if err != nil {
 			panic("")
