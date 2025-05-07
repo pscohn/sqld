@@ -214,12 +214,12 @@ func (s *Scanner) HasNextToken() bool {
 		return false
 	}
 
-	_, err := s.PeekToken()
+	t, err := s.PeekToken()
 	if err != nil {
 		panic("do something")
 	}
 
-	if s.BufferSize == 0 {
+	if t.Type == EOF {
 		return false
 	}
 
@@ -266,6 +266,7 @@ func (s *Scanner) EatToken() (Token, error) {
 
 // used for debugging only
 func (s *Scanner) ScanTokens() ([]Token, error) {
+
 	var tokens []Token
 	for !s.isAtEnd() {
 		err := s.scanToken()
@@ -302,6 +303,11 @@ func isWhitespace(c string) bool {
 
 // scanToken adds the next token to the ring buffer, skipping whitespace as needed.
 func (s *Scanner) scanToken() error {
+	if s.isAtEnd() {
+		s.addToken(EOF)
+		return nil
+	}
+
 	c := s.advance()
 	for isWhitespace(c) {
 		if c == "\n" {
@@ -340,7 +346,14 @@ func (s *Scanner) scanToken() error {
 	case ".":
 		s.addToken(Dot)
 	case "-":
-		s.addToken(Minus)
+		if s.match('-') {
+			// advance until end of line
+			for s.peek() != "\n" && !s.isAtEnd() {
+				s.advance()
+			}
+		} else {
+			s.addToken(Minus)
+		}
 	case "+":
 		s.addToken(Plus)
 	case ";":
@@ -398,6 +411,7 @@ func (s *Scanner) scanToken() error {
 	// 	s.line++
 
 	// literals
+	// todo: likely need to distinguish between these
 	case "\"":
 		err := s.string("\"")
 		if err != nil {

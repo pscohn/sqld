@@ -16,6 +16,8 @@ const (
 
 func (t TableFieldType) String() string {
 	switch t {
+	case TableFieldTypeNone:
+		return "(unknown)"
 	case TableFieldTypeBigSerial:
 		return "BIG SERIAL"
 	case TableFieldTypeText:
@@ -32,13 +34,12 @@ type TableField struct {
 }
 
 type Table struct {
-	Name string
-	// todo: preallocate/max buffer?
+	Schema string // optional
+	Name   string
 	Fields []TableField
 }
 
 type Schema struct {
-	// todo: preallocate/max buffer?
 	Tables []Table
 }
 
@@ -50,6 +51,8 @@ type SchemaParser struct {
 
 	Scanner    Scanner
 	TokenIndex int
+
+	ParseErrors []error
 }
 
 func NewSchemaParser(input string) SchemaParser {
@@ -65,8 +68,8 @@ func NewSchemaParser(input string) SchemaParser {
 // eat token: scanner releases current token
 
 func (p *SchemaParser) AddError(err error) Token {
+	p.ParseErrors = append(p.ParseErrors, err)
 	// todo
-
 	panic(err)
 }
 
@@ -91,19 +94,17 @@ func (p *SchemaParser) EatToken() Token {
 func (p *SchemaParser) EatTokenOfType(tokenType TokenType) Token {
 	token, err := p.Scanner.EatToken()
 	if err != nil {
-
+		p.AddError(err)
 	}
 
 	if token.Type != tokenType {
-		p.AddError(fmt.Errorf("expected token type"))
+		p.AddError(fmt.Errorf("expected token type %s, got %s", tokenType, token.Type))
 	}
 
 	return token
 }
 
 func (p *SchemaParser) TableFieldTypeFromString(tableType string) TableFieldType {
-	// todo: consider better way to sanitize user input than calling ToLower all over the place
-
 	s := strings.ToLower(tableType)
 
 	switch s {
@@ -111,10 +112,24 @@ func (p *SchemaParser) TableFieldTypeFromString(tableType string) TableFieldType
 		return TableFieldTypeBigSerial
 	case "text":
 		return TableFieldTypeText
+	default:
+		// allow parsing schemas even if we don't recognize all types
+		return TableFieldTypeNone
+	}
+}
+
+func (p *SchemaParser) parseMaybeQuotedName() string {
+	token := p.EatToken()
+	if token.Type == Identifier {
+		return token.Lexeme
 	}
 
-	p.AddError(fmt.Errorf("unknown field type: %s", s))
-	return 0
+	if token.Type == String {
+		return token.Lexeme
+	}
+
+	p.AddError(fmt.Errorf("expected name as double quoted string or identifier"))
+	return ""
 }
 
 func (p *SchemaParser) parseTableField() TableField {
@@ -123,13 +138,10 @@ func (p *SchemaParser) parseTableField() TableField {
 
 	var field TableField
 
-	// field name
-	token := p.EatTokenOfType(Identifier)
-
-	field.Name = token.Lexeme
+	field.Name = p.parseMaybeQuotedName()
 
 	// type
-	token = p.EatTokenOfType(Identifier)
+	token := p.EatTokenOfType(Identifier)
 
 	field.Type = p.TableFieldTypeFromString(token.Lexeme)
 
@@ -137,10 +149,22 @@ func (p *SchemaParser) parseTableField() TableField {
 
 	token = p.PeekToken()
 
-	for token.Type != Comma && token.Type != RightParen {
-		token = p.EatTokenOfType(Identifier)
+	// note: not parsing all possible options here.
+	// just common options or ones we care about.
+	unclosedParenCount := 0
+	for unclosedParenCount > 0 || (token.Type != Comma && token.Type != RightParen) {
+		token = p.EatToken()
 
-		// todo: look at efficient lookups
+		if token.Type == LeftParen {
+			unclosedParenCount++
+		} else if unclosedParenCount > 0 && token.Type == RightParen {
+			unclosedParenCount--
+		}
+		if token.Type != Identifier {
+			token = p.PeekToken()
+			continue
+		}
+
 		switch token.LexemeLowered {
 		case KeywordPrimary:
 			token = p.EatTokenOfType(Identifier)
@@ -148,8 +172,7 @@ func (p *SchemaParser) parseTableField() TableField {
 			if token.LexemeLowered == KeywordKey {
 				field.PrimaryKey = true
 			} else {
-				// todo
-				panic("not supported")
+				// not supported
 			}
 		case KeywordNull:
 			field.NotNull = false
@@ -159,8 +182,7 @@ func (p *SchemaParser) parseTableField() TableField {
 			if token.LexemeLowered == KeywordNull {
 				field.NotNull = true
 			} else {
-				// todo
-				panic("not supported")
+				// not supported
 			}
 		}
 
@@ -177,14 +199,31 @@ func (p *SchemaParser) parseTableField() TableField {
 
 }
 
+func (p *SchemaParser) parseTableSchemaAndName() (string, string) {
+	var schemaName, tableName string
+
+	name1 := p.parseMaybeQuotedName()
+
+	token := p.PeekToken()
+	if token.Type == Dot {
+		// eat the .
+		p.EatToken()
+
+		schemaName = name1
+		tableName = p.parseMaybeQuotedName()
+	} else {
+		tableName = name1
+	}
+
+	return schemaName, tableName
+}
+
 func (p *SchemaParser) parseTable() {
 	var table Table
-	// table name
-	token := p.EatTokenOfType(Identifier)
 
-	table.Name = token.Lexeme
+	table.Schema, table.Name = p.parseTableSchemaAndName()
 
-	token = p.EatTokenOfType(LeftParen)
+	token := p.EatTokenOfType(LeftParen)
 
 	token = p.PeekToken()
 
@@ -202,17 +241,27 @@ func (p *SchemaParser) parseTable() {
 
 func (p *SchemaParser) Parse() {
 	for p.Scanner.HasNextToken() {
-		token := p.EatToken()
+		// skip all statements until we find a "create table"
 
-		if token.Type != Identifier && token.LexemeLowered != KeywordCreate {
-			panic(fmt.Errorf("expected create, got %s", token.Lexeme))
+		token := p.PeekToken()
+		token2, err := p.Scanner.PeekTokenAfter(1)
+		if err != nil {
+			panic(err)
+		}
+
+		isCreate := token.Type == Identifier && token.LexemeLowered == KeywordCreate
+		isTable := token2.Type == Identifier && token2.LexemeLowered == KeywordTable
+
+		if !(isCreate && isTable) {
+			// statement we don't parse, skip until semicolon
+			for token.Type != Semicolon && p.Scanner.HasNextToken() {
+				token = p.EatToken()
+			}
+			continue
 		}
 
 		token = p.EatToken()
-		if token.Type != Identifier && token.LexemeLowered != KeywordTable {
-			panic(fmt.Errorf("expected table, got %s", token.Lexeme))
-		}
-
+		token = p.EatToken()
 		p.parseTable()
 	}
 }

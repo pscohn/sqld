@@ -263,7 +263,7 @@ func (p *QueryParser) EatToken() Token {
 func (p *QueryParser) AddError(err error) {
 	// p.ErrorMode = true
 	p.ParseErrors = append(p.ParseErrors, err)
-	//todo: find another way
+	// todo
 	panic(err)
 }
 
@@ -790,7 +790,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 		token = p.PeekToken()
 	}
 
-	token = p.EatIdentifier("from")
+	token = p.EatIdentifier(KeywordFrom)
 
 	// parse from
 	{
@@ -803,7 +803,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 	// optional where clause
 	token = p.PeekToken()
 
-	if token.Type == Identifier && token.LexemeLowered == "where" {
+	if token.Type == Identifier && token.LexemeLowered == KeywordWhere {
 
 		// todo: try to cut down on error handling that needs to happen during parsing
 		// consume the where
@@ -950,7 +950,6 @@ func (p *QueryParser) Parse() {
 
 		}
 
-		// todo: avoid making copies of token lexemes
 		if token.Type != Identifier {
 			// error
 			panic("")

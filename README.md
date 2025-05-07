@@ -18,13 +18,13 @@ generating clauses, into query-building code that builds SQL dynamically based o
 
 ## Current Status
 
-Currently focused on building full support for Postgres.
+Currently focused on improving support for Postgres SQL.
 
 - [x] Simple select queries
 - [x] Dynamically generated where clauses
-- [x] Range loops for dynamically adding clauses
+- [x] If statements and range loops for dynamically adding clauses
 - [x] Fragments for sharing SQL clauses between queries
-- [ ] Full support for Postgres SQL
+- [ ] Improved support for Postgres SQL
 
 ## How to Use
 
@@ -113,7 +113,7 @@ query, args := QueryGetAuthorWithVariable(GetAuthorWithVariableInput{id: "10", b
 
 ### `if` statements
 
-Any expression can be surrounded with an if statement, which uses the same SQL syntaxes
+Any expression can be surrounded with an if statement, which uses the same SQL syntax
 but only has access to the data in the template itself.
 
 ```sql
