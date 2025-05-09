@@ -62,11 +62,32 @@ func TestGeneration(t *testing.T) {
 			expectResultFile: "tests_sample_simple_select_comparisons.go",
 		},
 		{
+			name: "simple select - table and column alias",
+			queries: `
+				query GetAuthorSimpleSelectAlias {
+					SELECT id as my_id FROM authors as my_authors
+					WHERE my_authors.id = 5 or id = 5;
+				}
+			`,
+			expectErrors:     nil,
+			expectResultFile: "tests_sample_simple_select_alias.go",
+		},
+		{
 			name: "simple select with unknown table",
 			queries: `
 				query GetAuthorUnknownTable {
 					SELECT id FROM authorsWrong
 					WHERE id = 5 LIMIT 1
+				}
+			`,
+			expectErrors: []error{ErrUnknownTable},
+		},
+		{
+			name: "simple select with unknown table - aliased",
+			queries: `
+				query GetAuthorUnknownTableAlias {
+					SELECT id FROM authors as "authorsAlias"
+					WHERE authors.id = 5 LIMIT 1
 				}
 			`,
 			expectErrors: []error{ErrUnknownTable},
@@ -195,7 +216,7 @@ func TestGeneration(t *testing.T) {
 				query GetAuthorWithFragment(bioLike: string, bioLikeOptional: string?) {
 					SELECT id FROM authors
 					WHERE
-						id = 1 
+						id = 1
 						AND
 						{include AuthorFragment(bioLike, bioLikeOptional)}
 					LIMIT 1
@@ -217,7 +238,7 @@ func TestGeneration(t *testing.T) {
 				query GetAuthorWithFragment(bioLike: string, bioLikeOptional: string?) {
 					SELECT id FROM authors
 					WHERE
-						id = 1 
+						id = 1
 						AND
 						{include AuthorFragmentMispelled(bioLike)}
 
@@ -240,7 +261,7 @@ func TestGeneration(t *testing.T) {
 				query GetAuthorWithFragment(bioLike: string, bioLikeOptional: string?) {
 					SELECT id FROM authors
 					WHERE
-						id = 1 
+						id = 1
 						AND
 						{include AuthorFragment(bioLike)}
 
@@ -263,7 +284,7 @@ func TestGeneration(t *testing.T) {
 				query GetAuthorWithFragment(bioLike: string, bioLikeOptional: string?) {
 					SELECT id FROM authors
 					WHERE
-						id = 1 
+						id = 1
 						AND
 						{include AuthorFragment(bioLike, bioLikeOptional)}
 
@@ -405,6 +426,17 @@ func TestGeneratedSelects(t *testing.T) {
 			args,
 		)
 	})
+
+	t.Run("simple select - table and column alias", func(t *testing.T) {
+		query, args := QueryGetAuthorSimpleSelectAlias()
+		assertQuery(t,
+			"SELECT id my_id FROM authors my_authors WHERE my_authors.id = 5 OR id = 5;",
+			[]interface{}{},
+			query,
+			args,
+		)
+	})
+
 	t.Run("select with variable", func(t *testing.T) {
 		query, args := QueryGetAuthorWithVariable(GetAuthorWithVariableInput{id: "32"})
 		assertQuery(t,

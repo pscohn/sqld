@@ -33,6 +33,11 @@ type Scope struct {
 	QueryParamToGlobalName map[string]string
 }
 
+type TableContext struct {
+	Tables  []Table
+	Aliases []string // one to one with Tables
+}
+
 func checkTable(schema Schema, table string) (Table, CheckError) {
 	// todo: consider not looping
 	for _, tableDef := range schema.Tables {
@@ -45,15 +50,55 @@ func checkTable(schema Schema, table string) (Table, CheckError) {
 	}
 }
 
-func checkField(table Table, field string) (TableField, CheckError) {
+func checkField(tableCtx TableContext, field Field) (TableField, CheckError) {
 	// todo: consider not looping
-	for _, fieldDef := range table.Fields {
-		if fieldDef.Name == field {
-			return fieldDef, CheckError{}
+
+	// if field is qualified, check for that table (or table with that alias)
+	// if field is not qualified and there's one option, use that
+	// if field is not qualified by table name and there are multiple (or no) options, error.
+
+	tableMatchCount := 0
+	fieldMatchCount := 0
+	var fieldResult TableField
+	for i, tableDef := range tableCtx.Tables {
+		shouldCheckThisTable := false
+		if field.TableName == "" || field.TableName == tableCtx.Aliases[i] {
+			tableMatchCount++
+			shouldCheckThisTable = true
+		}
+		if shouldCheckThisTable {
+			if field.All {
+				// found either a table that matches, or no table qualifier.
+				// nothing else to check
+				return fieldResult, CheckError{}
+			}
+			for _, fieldDef := range tableDef.Fields {
+				if fieldDef.Name == field.Name {
+					fieldMatchCount++
+					fieldResult = fieldDef
+				}
+			}
 		}
 	}
+
+	if tableMatchCount == 0 {
+		return TableField{}, CheckError{
+			Err: fmt.Errorf("%w: table %s not found", ErrUnknownTable, field.TableName),
+		}
+	}
+
+	if fieldMatchCount == 1 {
+		return fieldResult, CheckError{}
+	}
+
+	if fieldMatchCount > 1 {
+		return TableField{}, CheckError{
+			Err: fmt.Errorf("%w: field %s found in multiple tables", ErrUnknownField, field.Name),
+		}
+	}
+
 	return TableField{}, CheckError{
-		Err: fmt.Errorf("%w: field %s not found in table %s", ErrUnknownField, field, table.Name),
+		Err: fmt.Errorf("%w: field %s not found", ErrUnknownField, field.Name),
 	}
 }
 
@@ -87,7 +132,7 @@ func checkParam(scope Scope, field string) (Param, CheckError) {
 }
 
 // This mutates the expression's IsClauseRequired field.
-func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []CheckError) {
+func checkExpr(tableCtx TableContext, scope Scope, expr *Expression) (*Expression, []CheckError) {
 	var errors []CheckError
 
 	switch expr.Type {
@@ -117,26 +162,26 @@ func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []Check
 
 		expr.ForLoopIteratorName = iteratorName
 
-		exprLeft, exprLeftErrors := checkExpr(table, newScope, expr.Left)
+		exprLeft, exprLeftErrors := checkExpr(tableCtx, newScope, expr.Left)
 		expr.Left = exprLeft
 
 		errors = append(errors, exprLeftErrors...)
 
 	case ExpressionTypeIf:
 		for _, elseif := range expr.ElseIfs {
-			ifExpr, ifExprErrs := checkExpr(table, scope, elseif.IfExpr)
+			ifExpr, ifExprErrs := checkExpr(tableCtx, scope, elseif.IfExpr)
 			errors = append(errors, ifExprErrs...)
 			elseif.IfExpr = ifExpr
 
 			if elseif.BodyExpr != nil {
-				bodyExpr, bodyExprErrs := checkExpr(table, scope, elseif.BodyExpr)
+				bodyExpr, bodyExprErrs := checkExpr(tableCtx, scope, elseif.BodyExpr)
 				errors = append(errors, bodyExprErrs...)
 				elseif.BodyExpr = bodyExpr
 			}
 		}
 
 		if expr.ElseBody != nil {
-			bodyExpr, bodyExprErrs := checkExpr(table, scope, expr.ElseBody)
+			bodyExpr, bodyExprErrs := checkExpr(tableCtx, scope, expr.ElseBody)
 			errors = append(errors, bodyExprErrs...)
 			expr.ElseBody = bodyExpr
 		}
@@ -187,14 +232,14 @@ func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []Check
 			newScope.QueryParamToGlobalName[param.Name] = inputArg.GlobalName
 		}
 
-		fragmentExpr, exprErrors := checkExpr(table, newScope, &fragment.FragmentExpression)
+		fragmentExpr, exprErrors := checkExpr(tableCtx, newScope, &fragment.FragmentExpression)
 		errors = append(errors, exprErrors...)
 
 		expr = fragmentExpr
 
 	case ExpressionTypeBinary:
-		exprLeft, exprLeftErrors := checkExpr(table, scope, expr.Left)
-		exprRight, exprRightErrors := checkExpr(table, scope, expr.Right)
+		exprLeft, exprLeftErrors := checkExpr(tableCtx, scope, expr.Left)
+		exprRight, exprRightErrors := checkExpr(tableCtx, scope, expr.Right)
 
 		errors = append(errors, exprLeftErrors...)
 		errors = append(errors, exprRightErrors...)
@@ -210,23 +255,23 @@ func checkExpr(table Table, scope Scope, expr *Expression) (*Expression, []Check
 	case ExpressionTypeLiteral:
 		if expr.LiteralType == LiteralTypeFieldName {
 			expr.IsClauseRequired = true
-			_, e := checkField(table, expr.LiteralFieldName)
+			_, e := checkField(tableCtx, expr.LiteralField)
 			if e.Err != nil {
 				errors = append(errors, e)
 			}
 		} else if expr.LiteralType == LiteralTypeVariable {
-			param, e := checkParam(scope, expr.LiteralFieldName)
+			param, e := checkParam(scope, expr.LiteralVariableName)
 			if e.Err != nil {
 				errors = append(errors, e)
 			}
 			expr.IsClauseRequired = param.Required
 			expr.IsQueryScopedParam = param.IsQueryScoped
-			expr.LiteralFieldName = param.GlobalName
-			if expr.LiteralFieldName == "" {
-				expr.LiteralFieldName = scope.QueryParamToGlobalName[param.Name]
+			expr.LiteralVariableName = param.GlobalName
+			if expr.LiteralVariableName == "" {
+				expr.LiteralVariableName = scope.QueryParamToGlobalName[param.Name]
 			}
-			if expr.LiteralFieldName == "" {
-				panic("expected field name to be set")
+			if expr.LiteralVariableName == "" {
+				panic("expected variable name to be set")
 			}
 		}
 	default:
@@ -257,24 +302,27 @@ func checkQuery(schema Schema, fragments []Query, query *Query) []CheckError {
 			return errors
 		}
 
+		tableCtx := TableContext{
+			Tables:  []Table{tableDef},
+			Aliases: []string{query.Select.FromAlias},
+		}
+
 		for _, f := range query.Select.Fields {
-			if f != "*" {
-				_, checkErr = checkField(tableDef, f)
-				if checkErr.Err != nil {
-					errors = append(errors, checkErr)
-				}
+			_, checkErr = checkField(tableCtx, f)
+			if checkErr.Err != nil {
+				errors = append(errors, checkErr)
 			}
 		}
 
 		if query.Select.Where.Type > 0 {
-			expr, exprErrs := checkExpr(tableDef, scope, &query.Select.Where)
+			expr, exprErrs := checkExpr(tableCtx, scope, &query.Select.Where)
 			query.Select.Where = *expr
 			errors = append(errors, exprErrs...)
 		}
 
 		if len(query.Select.OrderByFields) > 0 {
 			for _, f := range query.Select.OrderByFields {
-				_, checkErr = checkField(tableDef, f)
+				_, checkErr = checkField(tableCtx, f)
 				if checkErr.Err != nil {
 					errors = append(errors, checkErr)
 				}

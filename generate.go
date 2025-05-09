@@ -56,7 +56,7 @@ func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, schema S
 	case LiteralTypeNull:
 		sb.WriteString("nil")
 	case LiteralTypeString:
-		sb.WriteString(exp.LiteralString)
+		sb.WriteString(fmt.Sprintf("\"%s\"", exp.LiteralString))
 	case LiteralTypeNumber:
 		sb.WriteString(fmt.Sprintf("%d", exp.LiteralNumber))
 	case LiteralTypeFieldName:
@@ -67,7 +67,7 @@ func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, schema S
 			maybePointer = "*"
 		}
 
-		sb.WriteString(fmt.Sprintf("%s%s", maybePointer, exp.LiteralFieldName))
+		sb.WriteString(fmt.Sprintf("%s%s", maybePointer, exp.LiteralVariableName))
 	default:
 		panic("unhandled literal type")
 	}
@@ -117,7 +117,23 @@ func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Pa
 		sb.WriteString(fmt.Sprintf("\tlit%d := \"%d\"\n", g.LiteralIndex, exp.LiteralNumber))
 	case LiteralTypeFieldName:
 		g.LiteralIndex++
-		sb.WriteString(fmt.Sprintf("\tlit%d := \"%s\"\n", g.LiteralIndex, exp.LiteralFieldName))
+		sb.WriteString(fmt.Sprintf("\tlit%d := \"", g.LiteralIndex))
+
+		if exp.LiteralField.TableName != "" {
+			sb.WriteString(exp.LiteralField.TableName)
+			sb.WriteString(".")
+		}
+		if exp.LiteralField.All {
+			sb.WriteString("*")
+		} else {
+			sb.WriteString(exp.LiteralField.Name)
+		}
+		if exp.LiteralField.Alias != "" {
+			sb.WriteString(" ")
+			sb.WriteString(exp.LiteralField.Alias)
+		}
+
+		sb.WriteString("\"\n")
 	case LiteralTypeVariable:
 		maybePointer := ""
 		if !exp.IsClauseRequired {
@@ -127,7 +143,7 @@ func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Pa
 
 		sb.WriteString(fmt.Sprintf("\tlit%d := fmt.Sprintf(\"$%%d\", argIndex)\n", g.LiteralIndex))
 		sb.WriteString(fmt.Sprintf("\targs = append(args, %s", maybePointer))
-		sb.WriteString(exp.LiteralFieldName)
+		sb.WriteString(exp.LiteralVariableName)
 		sb.WriteString(")\n\targIndex++\n")
 	default:
 		panic("unhandled literal type")
@@ -145,10 +161,10 @@ func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Par
 		usesVar := false
 		if exp.Left.LiteralType == LiteralTypeVariable && !exp.Left.IsClauseRequired {
 			usesVar = true
-			sb.WriteString(fmt.Sprintf("\tif %s != nil {\n", exp.Left.LiteralFieldName))
+			sb.WriteString(fmt.Sprintf("\tif %s != nil {\n", exp.Left.LiteralVariableName))
 		} else if exp.Right.LiteralType == LiteralTypeVariable && !exp.Right.IsClauseRequired {
 			usesVar = true
-			sb.WriteString(fmt.Sprintf("\tif %s != nil {\n", exp.Right.LiteralFieldName))
+			sb.WriteString(fmt.Sprintf("\tif %s != nil {\n", exp.Right.LiteralVariableName))
 		}
 
 		g.writeLiteral(sb, schema, params, *exp.Left)
@@ -302,12 +318,18 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 		sb.WriteString("\targIndex := 1\n\n")
 	}
 
-	writeFields := func(fields []string) {
+	writeFields := func(fields []Field) {
 		for i, f := range fields {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(f)
+			if f.TableName != "" {
+				sb.WriteString(fmt.Sprintf("%s.", f.TableName))
+			}
+			sb.WriteString(f.Name)
+			if f.Alias != "" {
+				sb.WriteString(fmt.Sprintf(" %s", f.Alias))
+			}
 		}
 	}
 
@@ -318,6 +340,9 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 
 		sb.WriteString(" FROM ")
 		sb.WriteString(query.Select.From)
+		if query.Select.FromAlias != "" {
+			sb.WriteString(fmt.Sprintf(" %s", query.Select.FromAlias))
+		}
 		sb.WriteString("\")\n\n")
 
 		if query.Select.Where.Type != ExpressionTypeNone {

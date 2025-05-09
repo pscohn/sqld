@@ -119,6 +119,7 @@ const (
 	KeywordIn     Keyword = "in"
 	KeywordLimit  Keyword = "limit"
 	KeywordOrder  Keyword = "order"
+	KeywordBy     Keyword = "by"
 
 	KeywordAnd     Keyword = "and"
 	KeywordOr      Keyword = "or"
@@ -133,8 +134,26 @@ const (
 	KeywordIs      Keyword = "is"
 	KeywordPrimary Keyword = "primary"
 	KeywordKey     Keyword = "key"
+	KeywordAs      Keyword = "as"
 )
 
+// todo: flesh out list
+func IsReservedKeyword(k Keyword) bool {
+	switch k {
+	case
+		KeywordFrom,
+		KeywordWhere,
+		KeywordLimit:
+		return true
+	}
+	return false
+
+}
+
+// todo: I don't really like how literals are handled at the moment.
+// for one thing, have to call through interface to get string value, because
+// lexeme includes quotes. and using an interface here is inconsistent with the
+// general approach of wide structs.
 type Literal interface {
 	IsLiteral()
 	String() string
@@ -167,10 +186,11 @@ func (n NumberLiteral) String() string {
 }
 
 type Token struct {
-	Type    TokenType
-	Lexeme  string
-	Literal Literal
-	Line    int
+	Type         TokenType
+	Lexeme       string
+	Literal      Literal
+	SingleQuoted bool // for strings
+	Line         int
 
 	// This is populated for all identifiers, and is needed
 	// to check if the input is a keyword.
@@ -226,14 +246,12 @@ func (s *Scanner) HasNextToken() bool {
 	return true
 }
 
-// todo: peek token returns a token, but there may not actually be one if called at end of file
 func (s *Scanner) PeekToken() (Token, error) {
 	if s.BufferSize == 0 {
 		s.scanToken()
 	}
 
 	return s.TokenRingBuffer[s.BufferStart], nil
-
 }
 
 // lookahead by `n` tokens after the current token
@@ -316,6 +334,7 @@ func (s *Scanner) scanToken() error {
 
 		// todo: cleaner way to handle this - errors if ends in newline and tab
 		if s.isAtEnd() {
+			s.addToken(EOF)
 			return nil
 		}
 
@@ -411,7 +430,6 @@ func (s *Scanner) scanToken() error {
 	// 	s.line++
 
 	// literals
-	// todo: likely need to distinguish between these
 	case "\"":
 		err := s.string("\"")
 		if err != nil {
@@ -480,7 +498,7 @@ func (s *Scanner) number() error {
 		return fmt.Errorf("line %d: Error parsing float: %s", s.line, err.Error())
 	}
 
-	s.addTokenLiteral(Number, NumberLiteral(num))
+	s.addTokenLiteral(Number, NumberLiteral(num), false)
 	return nil
 }
 
@@ -502,7 +520,9 @@ func (s *Scanner) string(endChar string) error {
 	// trim surrounding quotes
 	value := s.Source[s.start+1 : s.current-1]
 
-	s.addTokenLiteral(String, StringLiteral(value))
+	isSingleQuoted := endChar == "'"
+
+	s.addTokenLiteral(String, StringLiteral(value), isSingleQuoted)
 
 	return nil
 }
@@ -541,20 +561,22 @@ func (s *Scanner) advance() string {
 }
 
 func (s *Scanner) addToken(t TokenType) {
-	s.addTokenLiteral(t, nil)
+	s.addTokenLiteral(t, nil, false)
 }
 
-func (s *Scanner) addTokenLiteral(t TokenType, literal Literal) {
+// todo: better design for singleQuoted
+func (s *Scanner) addTokenLiteral(t TokenType, literal Literal, singleQuoted bool) {
 	if s.BufferSize >= RingBufferSize {
 		panic("ring buffer full")
 	}
 
 	text := s.Source[s.start:s.current]
 	token := Token{
-		Type:    t,
-		Lexeme:  text,
-		Line:    s.line,
-		Literal: literal,
+		Type:         t,
+		Lexeme:       text,
+		Line:         s.line,
+		Literal:      literal,
+		SingleQuoted: singleQuoted,
 	}
 
 	if t == Identifier {

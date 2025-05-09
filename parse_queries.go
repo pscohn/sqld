@@ -112,11 +112,12 @@ type Expression struct {
 	Type ExpressionType
 
 	// literal expression type
-	LiteralType        LiteralType
-	LiteralNumber      int
-	LiteralString      string
-	LiteralFieldName   string // this will get rewritten by checker to reference a globally unique name (including across fragments)
-	IsQueryScopedParam bool
+	LiteralType         LiteralType
+	LiteralNumber       int
+	LiteralString       string
+	LiteralField        Field
+	LiteralVariableName string // this will get rewritten by checker to reference a globally unique name (including across fragments)
+	IsQueryScopedParam  bool
 
 	// set to true while checking if any children in its left/right subtrees
 	// are also required, or if it's an expression that can be determined as required.
@@ -138,14 +139,33 @@ type Expression struct {
 	FragmentArgs []string
 }
 
+type Field struct {
+	// valid fields:
+	// "tablename".id
+	// tablename."id" myID
+	// tablename.* as myFields (no effect)
+
+	// invalid:
+	// * as myFields
+
+	All       bool // *
+	Name      string
+	TableName string
+	Alias     string
+}
+
 // todo: maybe needs to be more general expression type
 // for being able to select from sub tables etc
 type SelectStmt struct {
-	Fields        []string
-	From          string
+	Fields []Field
+
+	// todo: will restructure this to work with joins
+	From      string
+	FromAlias string
+
 	Where         Expression
 	Limit         int
-	OrderByFields []string
+	OrderByFields []Field // ignores `Alias`
 }
 
 type ParamType int
@@ -294,7 +314,7 @@ func (p *QueryParser) EatTokenOfType(tokenType TokenType) Token {
 	}
 
 	if token.Type != tokenType {
-		p.AddError(fmt.Errorf("expected identifer type %s, got %s", tokenType, token.Type))
+		p.AddError(fmt.Errorf("expected identifier type %s, got %s", tokenType, token.Type))
 	}
 
 	return token
@@ -308,10 +328,25 @@ func (p *QueryParser) EatIdentifier(keyword string) Token {
 	token := p.EatTokenOfType(Identifier)
 
 	if token.LexemeLowered != keyword {
-		p.AddError(fmt.Errorf("expected identifer type %s", keyword))
+		p.AddError(fmt.Errorf("expected identifier type %s", keyword))
 	}
 
 	return token
+}
+
+// todo: copied from schema parser, probably just want to combine them
+func (p *QueryParser) parseMaybeQuotedName() string {
+	token := p.EatToken()
+	if token.Type == Identifier {
+		return token.Lexeme
+	}
+
+	if token.Type == String {
+		return token.Literal.String()
+	}
+
+	p.AddError(fmt.Errorf("expected name as double quoted string or identifier"))
+	return ""
 }
 
 // next token is `limit`
@@ -329,18 +364,17 @@ func (p *QueryParser) parseLimit() int {
 }
 
 // next token is `order`
-func (p *QueryParser) parseOrderBy() []string {
-	// todo: check these are field names or something
-	var res []string
+func (p *QueryParser) parseOrderBy() []Field {
+	var res []Field
 
-	// todo: consider turning these into special token type
-	_ = p.EatIdentifier("order")
-	_ = p.EatIdentifier("by")
+	_ = p.EatIdentifier(KeywordOrder)
+	_ = p.EatIdentifier(KeywordBy)
 	token := p.PeekToken()
 
 	for token.Type != RightBrace {
-		token = p.EatTokenOfType(Identifier)
-		res = append(res, token.Lexeme)
+
+		field := p.parseFieldName()
+		res = append(res, field)
 
 		token = p.PeekToken()
 		if token.Type != Comma {
@@ -357,32 +391,42 @@ func (p *QueryParser) parseOrderBy() []string {
 func (p *QueryParser) parseLiteral() Expression {
 	var expr Expression
 
-	token := p.EatToken()
+	token := p.PeekToken()
 
-	if token.Type == Identifier {
+	isNonTemplateSingleQuotedString := token.Type == String && !token.SingleQuoted && !p.IsParsingTemplate
+	// todo: will want to check any keyword literal, not just null
+	isNonTemplateNonKeywordIdentifier := token.Type == Identifier && token.LexemeLowered != KeywordNull && !p.IsParsingTemplate
+
+	if isNonTemplateSingleQuotedString || isNonTemplateNonKeywordIdentifier {
+		field := p.parseFieldName()
+		expr = Expression{
+			Type:             ExpressionTypeLiteral,
+			LiteralType:      LiteralTypeFieldName,
+			LiteralField:     field,
+			IsClauseRequired: true,
+		}
+	} else if token.Type == Identifier {
 		if token.LexemeLowered == KeywordNull {
+			token = p.EatToken()
 			expr = Expression{
 				Type:             ExpressionTypeLiteral,
 				LiteralType:      LiteralTypeNull,
 				IsClauseRequired: true,
 			}
-		} else {
-			litType := LiteralTypeFieldName
-			if p.IsParsingTemplate {
-				litType = LiteralTypeVariable
-			}
-
+		} else if p.IsParsingTemplate {
+			token = p.EatToken()
 			expr = Expression{
-				Type:             ExpressionTypeLiteral,
-				LiteralType:      litType,
-				LiteralFieldName: token.Lexeme,
-				IsClauseRequired: true,
+				Type:                ExpressionTypeLiteral,
+				LiteralType:         LiteralTypeVariable,
+				LiteralVariableName: token.Lexeme,
+				IsClauseRequired:    true,
 			}
 		}
 	} else if token.Type == Number {
+		token = p.EatToken()
 		number, ok := token.Literal.(NumberLiteral)
 		if !ok {
-			panic("")
+			panic("expected token to be NumberLiteral")
 		}
 		expr = Expression{
 			Type:          ExpressionTypeLiteral,
@@ -390,21 +434,23 @@ func (p *QueryParser) parseLiteral() Expression {
 			LiteralNumber: int(number),
 		}
 	} else if token.Type == LeftBrace {
+		token = p.EatToken()
 		token = p.EatTokenOfType(Identifier)
 
 		expr = Expression{
-			Type:             ExpressionTypeLiteral,
-			LiteralType:      LiteralTypeVariable,
-			LiteralFieldName: token.Lexeme,
+			Type:                ExpressionTypeLiteral,
+			LiteralType:         LiteralTypeVariable,
+			LiteralVariableName: token.Lexeme,
 		}
 
 		token = p.EatTokenOfType(RightBrace)
 
 	} else if token.Type == String {
+		token = p.EatToken()
 		expr = Expression{
 			Type:          ExpressionTypeLiteral,
 			LiteralType:   LiteralTypeString,
-			LiteralString: token.Lexeme,
+			LiteralString: token.Literal.String(),
 		}
 
 		// todo: handle patterns for like clauses
@@ -709,7 +755,6 @@ func (p *QueryParser) parseAnd() Expression {
 
 	token := p.PeekToken()
 
-	// todo: tokentype And/Or not used
 	for token.Type == Identifier && token.LexemeLowered == KeywordAnd {
 		token = p.EatToken()
 
@@ -761,6 +806,103 @@ func (p *QueryParser) parseExpression() Expression {
 	return *expr
 }
 
+// alias rules:
+// - fields: can specify reserved keyword only if paired with "as", or in double quotes
+// - tables: cannot use quoted alias, or reserved keywords
+// as foo
+// as "foo"
+// foo
+// "foo"
+func (p *QueryParser) parseAliasForColumn() string {
+	token := p.PeekToken()
+	if token.Type == Identifier && token.LexemeLowered == KeywordAs {
+		p.EatToken()
+
+		// any identifier or string allowed here
+		aliasName := p.parseMaybeQuotedName()
+		return aliasName
+	}
+
+	// no "as" - only non-reserved keywords, or quoted strings, are considered part of the alias
+	token = p.PeekToken()
+	if token.Type == String || token.Type == Identifier && !IsReservedKeyword(token.LexemeLowered) {
+		aliasName := p.parseMaybeQuotedName()
+		return aliasName
+	}
+
+	return ""
+}
+
+func (p *QueryParser) parseAliasForTable() string {
+	token := p.PeekToken()
+	if token.Type == Identifier && token.LexemeLowered == KeywordAs {
+		p.EatToken()
+
+		token = p.EatToken()
+		if IsReservedKeyword(token.LexemeLowered) {
+			p.AddError(fmt.Errorf("cannot used reserved word as table alias"))
+		}
+
+		aliasName := token.Lexeme
+		return aliasName
+	}
+
+	// with or without "as", only non-reserved identifiers allowed here
+	token = p.PeekToken()
+	if token.Type == Identifier && !IsReservedKeyword(token.LexemeLowered) {
+		p.EatToken()
+		aliasName := token.Lexeme
+		return aliasName
+	}
+
+	return ""
+}
+
+func (p *QueryParser) parseFieldName() Field {
+	token := p.PeekToken()
+	field := Field{}
+
+	if token.Type == Star {
+		_ = p.EatToken()
+		field.All = true
+		return field
+	}
+
+	fieldOrTableName := p.parseMaybeQuotedName()
+
+	token = p.PeekToken()
+	if token.Type == Dot {
+		// first name is the table name
+		// now parse possible star/field name again
+
+		p.EatToken()
+
+		field.TableName = fieldOrTableName
+
+		token = p.PeekToken()
+		if token.Type == Star {
+			p.EatToken()
+			field.All = true
+			// don't return - syntactically valid to do authors.* as foo
+		} else {
+			fieldName := p.parseMaybeQuotedName()
+			field.Name = fieldName
+		}
+
+	} else {
+		field.Name = fieldOrTableName
+	}
+
+	return field
+}
+
+func (p *QueryParser) parseFieldNameWithAlias() Field {
+	field := p.parseFieldName()
+	aliasName := p.parseAliasForColumn()
+	field.Alias = aliasName
+	return field
+}
+
 func (p *QueryParser) parseSelect() SelectStmt {
 	var stmt SelectStmt
 
@@ -768,16 +910,8 @@ func (p *QueryParser) parseSelect() SelectStmt {
 
 	// parse select fields
 	for !(token.Type == Identifier && token.LexemeLowered == KeywordFrom) {
-		token = p.EatToken()
-
-		if token.Type == Star {
-			stmt.Fields = append(stmt.Fields, "*")
-		} else if token.Type == Identifier {
-			stmt.Fields = append(stmt.Fields, token.Lexeme)
-		} else {
-			// todo: report actual error
-			panic("unhandled field")
-		}
+		field := p.parseFieldNameWithAlias()
+		stmt.Fields = append(stmt.Fields, field)
 
 		token = p.PeekToken()
 
@@ -797,7 +931,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 		// table name
 		token = p.EatTokenOfType(Identifier)
 		stmt.From = token.Lexeme
-
+		stmt.FromAlias = p.parseAliasForTable()
 	}
 
 	// optional where clause
@@ -805,7 +939,6 @@ func (p *QueryParser) parseSelect() SelectStmt {
 
 	if token.Type == Identifier && token.LexemeLowered == KeywordWhere {
 
-		// todo: try to cut down on error handling that needs to happen during parsing
 		// consume the where
 		token = p.EatToken()
 
@@ -884,7 +1017,6 @@ func (p *QueryParser) parseQuery(isFragment bool) {
 				p.AddError(fmt.Errorf("unrecognized type: %s", token.Lexeme))
 			}
 
-			// todo: really clean up this, should be much fewer lines to write this
 			token = p.PeekToken()
 
 			if token.Type == Bang {
@@ -931,6 +1063,11 @@ func (p *QueryParser) parseQuery(isFragment bool) {
 		} else {
 			panic("not supported")
 		}
+	}
+
+	token = p.PeekToken()
+	if token.Type == Semicolon {
+		_ = p.EatToken()
 	}
 
 	token = p.EatTokenOfType(RightBrace)

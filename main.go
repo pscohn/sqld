@@ -9,14 +9,25 @@ import (
 // todo
 // - test invalid queries and error handling
 //   - ensure operator is valid with left and right, and left/right both same type
-// - see if escape hatch is doable
-// - allow putting a select query in a fragment
 // - should be able to vastly simplify generated simple_select_comparisons.go
 // - set up test suite for running queries directly against a database
 // - fmt.fprintf might clean some things up
 // - performance pass
 
+// todo - template features
+// - type definitions
+// - table refs - some way to pass table names to fragments
+// - allow putting a select query etc in a fragment
+// - see if escape hatch is doable
+
 // todo - more sql (postgres) support
+// - column and table aliases
+// - join / multiple tables in a query - check field names against correct tables
+//  - test that we error if unqualified field is in multiple tables
+// - add test for order by, and test that order by fields are checked
+// - group clause
+// - with queries
+// - save and output schema qualifiers
 // - "not" unary: https://www.postgresql.org/docs/current/functions-logical.html
 // - comparison predicates: https://www.postgresql.org/docs/current/functions-comparison.html
 
