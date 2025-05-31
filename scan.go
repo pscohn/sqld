@@ -135,6 +135,15 @@ const (
 	KeywordPrimary Keyword = "primary"
 	KeywordKey     Keyword = "key"
 	KeywordAs      Keyword = "as"
+
+	KeywordJoin  Keyword = "join"
+	KeywordOn    Keyword = "on"
+	KeywordInner Keyword = "inner"
+	KeywordLeft  Keyword = "left"
+	KeywordRight Keyword = "right"
+	KeywordOuter Keyword = "outer"
+	KeywordCross Keyword = "cross"
+	KeywordFull  Keyword = "full"
 )
 
 // todo: flesh out list
@@ -143,7 +152,15 @@ func IsReservedKeyword(k Keyword) bool {
 	case
 		KeywordFrom,
 		KeywordWhere,
-		KeywordLimit:
+		KeywordLimit,
+		KeywordJoin,
+		KeywordOn,
+		KeywordInner,
+		KeywordOuter,
+		KeywordCross,
+		KeywordFull,
+		KeywordLeft,
+		KeywordRight:
 		return true
 	}
 	return false
@@ -201,6 +218,20 @@ func (t Token) String() string {
 	return t.Type.String() + " " + t.Lexeme + " " + t.Literal.String()
 }
 
+func (t Token) IsKeyword(keywords ...string) bool {
+	if t.Type != Identifier {
+		return false
+	}
+
+	for _, k := range keywords {
+		if t.LexemeLowered == k {
+			return true
+		}
+	}
+
+	return false
+}
+
 const RingBufferSize = 5
 
 type Scanner struct {
@@ -226,10 +257,6 @@ func NewScanner(source string) Scanner {
 
 // todo: redo this
 func (s *Scanner) HasNextToken() bool {
-	if s.BufferSize > 0 {
-		return true
-	}
-
 	if s.isAtEnd() {
 		return false
 	}

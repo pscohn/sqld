@@ -21,7 +21,6 @@ import (
 // - see if escape hatch is doable
 
 // todo - more sql (postgres) support
-// - column and table aliases
 // - join / multiple tables in a query - check field names against correct tables
 //  - test that we error if unqualified field is in multiple tables
 // - add test for order by, and test that order by fields are checked

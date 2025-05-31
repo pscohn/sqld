@@ -154,17 +154,53 @@ type Field struct {
 	Alias     string
 }
 
+type JoinType int
+
+const (
+	JoinTypeInner JoinType = iota
+	JoinTypeCross
+	// outer is implied
+	JoinTypeLeft
+	JoinTypeRight
+	JoinTypeFull
+)
+
+func (t JoinType) String() string {
+	switch t {
+	case JoinTypeInner:
+		return "INNER JOIN"
+	case JoinTypeCross:
+		return "CROSS JOIN"
+	case JoinTypeLeft:
+		return "LEFT JOIN"
+	case JoinTypeRight:
+		return "RIGHT JOIN"
+	case JoinTypeFull:
+		return "FULL OUTER JOIN"
+	default:
+		panic(fmt.Sprintf("unknown join type: %d", t))
+
+	}
+}
+
+type Join struct {
+	Table      string
+	TableAlias string
+	JoinType   JoinType
+	On         Expression
+}
+
 // todo: maybe needs to be more general expression type
 // for being able to select from sub tables etc
 type SelectStmt struct {
 	Fields []Field
 
-	// todo: will restructure this to work with joins
 	From      string
 	FromAlias string
 
+	Joins         []Join
 	Where         Expression
-	Limit         int
+	Limit         *int
 	OrderByFields []Field // ignores `Alias`
 }
 
@@ -314,7 +350,7 @@ func (p *QueryParser) EatTokenOfType(tokenType TokenType) Token {
 	}
 
 	if token.Type != tokenType {
-		p.AddError(fmt.Errorf("expected identifier type %s, got %s", tokenType, token.Type))
+		p.AddError(fmt.Errorf("expected token type %s, got %s", tokenType, token.Type))
 	}
 
 	return token
@@ -903,6 +939,106 @@ func (p *QueryParser) parseFieldNameWithAlias() Field {
 	return field
 }
 
+func (p *QueryParser) parseJoin() []Join {
+
+	joins := []Join{}
+
+	parseOuterJoin := func(t2, t3 Token) {
+		_ = p.EatToken()
+		if t2.IsKeyword(KeywordOuter) {
+			_ = p.EatToken()
+
+			t := p.EatToken()
+			if !t.IsKeyword(KeywordJoin) {
+				p.AddError(fmt.Errorf("expected 'join' after 'outer"))
+			}
+		} else if t2.IsKeyword(KeywordJoin) {
+			_ = p.EatToken()
+		} else {
+			p.AddError(fmt.Errorf("expected 'outer' or 'join'"))
+		}
+	}
+
+	for p.isJoin() {
+
+		// parse join type
+		joinType := JoinTypeInner
+
+		token := p.PeekToken()
+		token2 := p.PeekTokenAfter(1)
+		token3 := p.PeekTokenAfter(2)
+
+		if token.Type != Identifier {
+			p.AddError(fmt.Errorf("expected identifier to start join"))
+		}
+
+		switch token.LexemeLowered {
+		case KeywordJoin:
+			_ = p.EatToken()
+			joinType = JoinTypeInner
+		case KeywordInner:
+			if !token2.IsKeyword(KeywordJoin) {
+				p.AddError(fmt.Errorf("expected 'join' after 'inner'"))
+			}
+			_ = p.EatToken()
+			_ = p.EatToken()
+			joinType = JoinTypeInner
+		case KeywordCross:
+			_ = p.EatToken()
+			joinType = JoinTypeCross
+		case KeywordLeft:
+			joinType = JoinTypeLeft
+			parseOuterJoin(token2, token3)
+		case KeywordRight:
+			joinType = JoinTypeLeft
+			parseOuterJoin(token2, token3)
+		case KeywordFull:
+			joinType = JoinTypeFull
+			parseOuterJoin(token2, token3)
+		}
+
+		// parse table with alias
+		token = p.EatTokenOfType(Identifier)
+		table := token.Lexeme
+		alias := p.parseAliasForTable()
+
+		// parse ON expression.
+		// not required with cross, natural, or using - unsupported for now
+
+		p.EatIdentifier(KeywordOn)
+		expr := p.parseExpression()
+
+		joins = append(joins, Join{
+			Table:      table,
+			TableAlias: alias,
+			JoinType:   joinType,
+			On:         expr,
+		})
+
+	}
+
+	return joins
+}
+
+func (p *QueryParser) isJoin() bool {
+	token := p.PeekToken()
+	token2 := p.PeekTokenAfter(1)
+	token3 := p.PeekTokenAfter(2)
+
+	// simplified check, will actually try to properly parse if join seems to be here:
+	if token.IsKeyword(KeywordJoin) || token2.IsKeyword(KeywordJoin) || token3.IsKeyword(KeywordJoin) {
+		return true
+	}
+
+	// possibly do this more precise check
+	// if token.IsKeyword(KeywordInner, KeywordLeft, KeywordRight, KeywordCross) &&
+	// 	(token2.IsKeyword(KeywordJoin) || (token2.IsKeyword(KeywordOuter) && token3.IsKeyword(KeywordJoin))) {
+	// 	return true
+	// }
+
+	return false
+}
+
 func (p *QueryParser) parseSelect() SelectStmt {
 	var stmt SelectStmt
 
@@ -934,10 +1070,13 @@ func (p *QueryParser) parseSelect() SelectStmt {
 		stmt.FromAlias = p.parseAliasForTable()
 	}
 
+	// optional join clause
+	stmt.Joins = p.parseJoin()
+
 	// optional where clause
 	token = p.PeekToken()
 
-	if token.Type == Identifier && token.LexemeLowered == KeywordWhere {
+	if token.IsKeyword(KeywordWhere) {
 
 		// consume the where
 		token = p.EatToken()
@@ -952,7 +1091,7 @@ func (p *QueryParser) parseSelect() SelectStmt {
 	if token.Type == Identifier {
 		if token.LexemeLowered == KeywordLimit {
 			n := p.parseLimit()
-			stmt.Limit = n
+			stmt.Limit = &n
 		} else if token.LexemeLowered == KeywordOrder {
 			sortFields := p.parseOrderBy()
 			stmt.OrderByFields = sortFields

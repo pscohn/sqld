@@ -336,6 +336,79 @@ func TestGeneration(t *testing.T) {
 			expectErrors:     nil,
 			expectResultFile: "tests_sample_select_if_statement_multiple_joined.go",
 		},
+
+		{
+			name: "select with join",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT a1.id FROM authors a1
+							LEFT JOIN authors a2
+								ON a1.id = a2.id
+						}
+					`,
+			expectErrors:     nil,
+			expectResultFile: "tests_sample_select_join.go",
+		},
+		{
+			name: "select with join - errors with ambiguous field",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT id FROM authors a1
+							LEFT JOIN authors a2 
+								ON a1.id = a2.id
+						}
+					`,
+			expectErrors:     []error{ErrAmbiguousField},
+			expectResultFile: "",
+		},
+		{
+			name: "select with join - errors with ambiguous field in condition",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT a1.id FROM authors a1
+							LEFT JOIN authors a2 
+								ON id = a2.id
+						}
+					`,
+			expectErrors:     []error{ErrAmbiguousField},
+			expectResultFile: "",
+		},
+		{
+			name: "select with join - errors with unknown table in condition",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT a1.id FROM authors a1
+							LEFT JOIN authors a2 
+								ON authors.id = a2.id
+						}
+					`,
+			expectErrors:     []error{ErrUnknownTable},
+			expectResultFile: "",
+		},
+		{
+			name: "select with join - errors with unknown column in condition",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT a1.id FROM authors a1
+							LEFT JOIN authors a2 
+								ON a1.doodad = a2.id
+						}
+					`,
+			expectErrors:     []error{ErrUnknownField},
+			expectResultFile: "",
+		},
+		{
+			name: "select with join - errors with unknown table being joined",
+			queries: `
+						query GetAuthorJoin() {
+							SELECT a1.id FROM authors a1
+							LEFT JOIN foobar a2 
+								ON a1.id = a2.id
+						}
+					`,
+			expectErrors:     []error{ErrUnknownTable},
+			expectResultFile: "",
+		},
 	}
 
 	for _, test := range testCases {
@@ -656,6 +729,16 @@ func TestGeneratedSelects(t *testing.T) {
 		assertQuery(t,
 			"SELECT id FROM authors WHERE bio = $1;",
 			[]interface{}{"bio"},
+			query,
+			args,
+		)
+	})
+
+	t.Run("select with join", func(t *testing.T) {
+		query, args := QueryGetAuthorJoin()
+		assertQuery(t,
+			"SELECT a1.id FROM authors a1 LEFT JOIN authors a2 ON a1.id = a2.id;",
+			[]interface{}{},
 			query,
 			args,
 		)

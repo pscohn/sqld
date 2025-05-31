@@ -9,11 +9,19 @@ import (
 // todo: reconsider which fields/methods are exposed
 type Generator struct {
 	PackageName string
+	Schema      Schema
 
 	// Used for giving unique names to output of expressions
 	GroupIndex   int
 	ExprIndex    int
 	LiteralIndex int
+
+	// If a where clause is added dynamically based on conditionals or presence of values,
+	// use this to add the WHERE keyword in top-level expressions.
+	// TODO: this isn't the best way to do this, since expressions should ideally not care about what
+	// context it's used in. We could instead write end result to variable in all cases, and
+	// add the WHERE keyword if expression value is not empty.
+	GenPossiblyOptionalWhereClause bool
 }
 
 // handles generating ops within template expressions (Go syntax).
@@ -51,7 +59,7 @@ func OpTypeToGoString(opType OpType) string {
 	return op
 }
 
-func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, schema Schema, params []Param, exp Expression, isPointerComparison bool) {
+func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, params []Param, exp Expression, isPointerComparison bool) {
 	switch exp.LiteralType {
 	case LiteralTypeNull:
 		sb.WriteString("nil")
@@ -73,7 +81,7 @@ func (g *Generator) writeTemplateExpressionLiteral(sb *strings.Builder, schema S
 	}
 }
 
-func (g *Generator) writeTemplateExpressionBinary(sb *strings.Builder, schema Schema, params []Param, exp Expression) {
+func (g *Generator) writeTemplateExpressionBinary(sb *strings.Builder, params []Param, exp Expression) {
 	op := OpTypeToGoString(exp.Op)
 
 	isPointerComparison := false
@@ -82,9 +90,9 @@ func (g *Generator) writeTemplateExpressionBinary(sb *strings.Builder, schema Sc
 	}
 
 	sb.WriteString("(")
-	g.writeTemplateExpressionLiteral(sb, schema, params, *exp.Left, isPointerComparison)
+	g.writeTemplateExpressionLiteral(sb, params, *exp.Left, isPointerComparison)
 	sb.WriteString(fmt.Sprintf(" %s ", op))
-	g.writeTemplateExpressionLiteral(sb, schema, params, *exp.Right, isPointerComparison)
+	g.writeTemplateExpressionLiteral(sb, params, *exp.Right, isPointerComparison)
 	sb.WriteString(")")
 }
 
@@ -100,11 +108,15 @@ func (g *Generator) endGroup(sb *strings.Builder, groupIndex int, op string, add
 		sb.WriteString(fmt.Sprintf("\t\tgroupClause%d = append(groupClause%d, fmt.Sprintf(\"(%%s)\", groupClause%dResult))\n", *addToGroupClauseNum, *addToGroupClauseNum, groupIndex))
 	} else {
 		// this is the top level expression, so add the base where clause
-		sb.WriteString(fmt.Sprintf("sb.WriteString(fmt.Sprintf(\" WHERE %%s\", groupClause%dResult))", groupIndex))
+		possibleWhere := ""
+		if g.GenPossiblyOptionalWhereClause {
+			possibleWhere = " WHERE "
+		}
+		sb.WriteString(fmt.Sprintf("sb.WriteString(fmt.Sprintf(\"%s%%s\", groupClause%dResult))", possibleWhere, groupIndex))
 	}
 }
 
-func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Param, exp Expression) {
+func (g *Generator) writeLiteral(sb *strings.Builder, params []Param, exp Expression) {
 	switch exp.LiteralType {
 	case LiteralTypeNull:
 		g.LiteralIndex++
@@ -150,7 +162,7 @@ func (g *Generator) writeLiteral(sb *strings.Builder, schema Schema, params []Pa
 	}
 }
 
-func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
+func (g *Generator) writeBinary(sb *strings.Builder, params []Param, exp Expression, addToGroupClauseNum *int) {
 	// todo: consider using a lexeme we should already have validated
 	op := exp.Op.String()
 
@@ -167,8 +179,8 @@ func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Par
 			sb.WriteString(fmt.Sprintf("\tif %s != nil {\n", exp.Right.LiteralVariableName))
 		}
 
-		g.writeLiteral(sb, schema, params, *exp.Left)
-		g.writeLiteral(sb, schema, params, *exp.Right)
+		g.writeLiteral(sb, params, *exp.Left)
+		g.writeLiteral(sb, params, *exp.Right)
 
 		// literal needs to be able to write arg either in first position or second
 		// so the literals each generate separate string variable for now, and compose them here
@@ -176,10 +188,15 @@ func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Par
 		exprName := fmt.Sprintf("expr%d", g.ExprIndex)
 		sb.WriteString(fmt.Sprintf("\t%s := fmt.Sprintf(\"%%s %s %%s\", lit%d, lit%d)\n", exprName, op, g.LiteralIndex-1, g.LiteralIndex))
 
+		// todo: some duplication here with endGroup
 		if addToGroupClauseNum != nil {
 			sb.WriteString(fmt.Sprintf("\tgroupClause%d = append(groupClause%d, %s)\n", *addToGroupClauseNum, *addToGroupClauseNum, exprName))
 		} else {
-			sb.WriteString(fmt.Sprintf("sb.WriteString(fmt.Sprintf(\" WHERE %%s\", %s))\n\n", exprName))
+			possibleWhere := ""
+			if g.GenPossiblyOptionalWhereClause {
+				possibleWhere = " WHERE "
+			}
+			sb.WriteString(fmt.Sprintf("sb.WriteString(fmt.Sprintf(\"%s%%s\", %s))\n\n", possibleWhere, exprName))
 		}
 
 		if usesVar {
@@ -192,8 +209,8 @@ func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Par
 
 		groupIndex := g.GroupIndex
 
-		g.writeExpression(sb, schema, params, *exp.Left, &groupIndex)
-		g.writeExpression(sb, schema, params, *exp.Right, &groupIndex)
+		g.writeExpression(sb, params, *exp.Left, &groupIndex)
+		g.writeExpression(sb, params, *exp.Right, &groupIndex)
 
 		g.endGroup(sb, groupIndex, op, addToGroupClauseNum)
 
@@ -201,7 +218,7 @@ func (g *Generator) writeBinary(sb *strings.Builder, schema Schema, params []Par
 	}
 }
 
-func (g *Generator) writeForLoop(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
+func (g *Generator) writeForLoop(sb *strings.Builder, params []Param, exp Expression, addToGroupClauseNum *int) {
 	g.GroupIndex++
 	sb.WriteString(fmt.Sprintf("\tgroupClause%d := make([]string, 0, len(input.%s))\n\n", g.GroupIndex, exp.ForLoopVarName))
 
@@ -216,7 +233,7 @@ func (g *Generator) writeForLoop(sb *strings.Builder, schema Schema, params []Pa
 		op = "OR"
 	}
 
-	g.writeExpression(sb, schema, params, *exp.Left, &groupIndex)
+	g.writeExpression(sb, params, *exp.Left, &groupIndex)
 
 	sb.WriteString("\t}\n\n")
 
@@ -225,7 +242,7 @@ func (g *Generator) writeForLoop(sb *strings.Builder, schema Schema, params []Pa
 	sb.WriteString("\t}\n\n")
 }
 
-func (g *Generator) writeIf(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
+func (g *Generator) writeIf(sb *strings.Builder, params []Param, exp Expression, addToGroupClauseNum *int) {
 	for i, elseif := range exp.ElseIfs {
 		exprStart := "} else if "
 		if i == 0 {
@@ -236,18 +253,18 @@ func (g *Generator) writeIf(sb *strings.Builder, schema Schema, params []Param, 
 		// write literals to string
 		// could be a deeply nested expression
 		// kind of want to call writeBinary but output to a static string
-		g.writeTemplateExpressionBinary(sb, schema, params, *elseif.IfExpr)
+		g.writeTemplateExpressionBinary(sb, params, *elseif.IfExpr)
 
 		sb.WriteString(" {\n")
 
 		if elseif.BodyExpr != nil {
-			g.writeExpression(sb, schema, params, *elseif.BodyExpr, addToGroupClauseNum)
+			g.writeExpression(sb, params, *elseif.BodyExpr, addToGroupClauseNum)
 		}
 	}
 
 	if exp.ElseBody != nil {
 		sb.WriteString("} else {\n")
-		g.writeExpression(sb, schema, params, *exp.ElseBody, addToGroupClauseNum)
+		g.writeExpression(sb, params, *exp.ElseBody, addToGroupClauseNum)
 	}
 
 	sb.WriteString("\t}\n\n")
@@ -255,16 +272,16 @@ func (g *Generator) writeIf(sb *strings.Builder, schema Schema, params []Param, 
 
 // todo: probably will want some object to encapuslate context
 // of params, current table, etc
-func (g *Generator) writeExpression(sb *strings.Builder, schema Schema, params []Param, exp Expression, addToGroupClauseNum *int) {
+func (g *Generator) writeExpression(sb *strings.Builder, params []Param, exp Expression, addToGroupClauseNum *int) {
 	switch exp.Type {
 	case ExpressionTypeLiteral:
-		g.writeLiteral(sb, schema, params, exp)
+		g.writeLiteral(sb, params, exp)
 	case ExpressionTypeBinary:
-		g.writeBinary(sb, schema, params, exp, addToGroupClauseNum)
+		g.writeBinary(sb, params, exp, addToGroupClauseNum)
 	case ExpressionTypeForLoop:
-		g.writeForLoop(sb, schema, params, exp, addToGroupClauseNum)
+		g.writeForLoop(sb, params, exp, addToGroupClauseNum)
 	case ExpressionTypeIf:
-		g.writeIf(sb, schema, params, exp, addToGroupClauseNum)
+		g.writeIf(sb, params, exp, addToGroupClauseNum)
 	case ExpressionTypeFragment:
 		panic("expected fragment to be expanded into expression")
 	default:
@@ -272,7 +289,7 @@ func (g *Generator) writeExpression(sb *strings.Builder, schema Schema, params [
 	}
 }
 
-func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
+func (g *Generator) generateQuery(query Query) ([]byte, error) {
 
 	sb := strings.Builder{}
 
@@ -345,13 +362,17 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 		}
 		sb.WriteString("\")\n\n")
 
+		for _, j := range query.Select.Joins {
+			joinType := j.JoinType
+			sb.WriteString(fmt.Sprintf("\tsb.WriteString(\" %s %s %s ON \")\n", joinType, j.Table, j.TableAlias))
+
+			g.writeExpression(&sb, query.Params, j.On, nil)
+		}
+
 		if query.Select.Where.Type != ExpressionTypeNone {
-			if query.Select.Where.IsClauseRequired {
-				// sb.WriteString(" where ")
-				g.writeExpression(&sb, schema, query.Params, query.Select.Where, nil)
-			} else {
-				g.writeExpression(&sb, schema, query.Params, query.Select.Where, nil)
-			}
+			g.GenPossiblyOptionalWhereClause = true
+			g.writeExpression(&sb, query.Params, query.Select.Where, nil)
+			g.GenPossiblyOptionalWhereClause = false
 		}
 
 		if len(query.Select.OrderByFields) > 0 {
@@ -359,10 +380,9 @@ func (g *Generator) generateQuery(schema Schema, query Query) ([]byte, error) {
 			writeFields(query.Select.OrderByFields)
 		}
 
-		// todo: what if user specifies LIMIT 0
-		if query.Select.Limit > 0 {
+		if query.Select.Limit != nil {
 			sb.WriteString("\tsb.WriteString(\" LIMIT ")
-			sb.WriteString(fmt.Sprintf("%d", query.Select.Limit))
+			sb.WriteString(fmt.Sprintf("%d", *query.Select.Limit))
 			sb.WriteString("\")\n")
 		}
 
@@ -389,7 +409,8 @@ func Generate(schema Schema, queries Queries, outputPackage string) (string, err
 		}
 		g := Generator{}
 		g.PackageName = outputPackage
-		result, err = g.generateQuery(schema, q)
+		g.Schema = schema
+		result, err = g.generateQuery(q)
 		if err != nil {
 			panic("")
 		}

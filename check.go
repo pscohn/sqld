@@ -8,6 +8,7 @@ import (
 var (
 	ErrUnknownTable          = errors.New("unknown table")
 	ErrUnknownField          = errors.New("unknown field")
+	ErrAmbiguousField        = errors.New("ambiguous field")
 	ErrUnknownParam          = errors.New("unknown param")
 	ErrUnknownFragment       = errors.New("unknown fragment")
 	ErrFragmentParamMismatch = errors.New("mismatched fragment params")
@@ -93,7 +94,7 @@ func checkField(tableCtx TableContext, field Field) (TableField, CheckError) {
 
 	if fieldMatchCount > 1 {
 		return TableField{}, CheckError{
-			Err: fmt.Errorf("%w: field %s found in multiple tables", ErrUnknownField, field.Name),
+			Err: fmt.Errorf("%w: field %s found in multiple tables", ErrAmbiguousField, field.Name),
 		}
 	}
 
@@ -307,6 +308,25 @@ func checkQuery(schema Schema, fragments []Query, query *Query) []CheckError {
 			Aliases: []string{query.Select.FromAlias},
 		}
 
+		// select fields rely on join clause, so process join first
+		for i, j := range query.Select.Joins {
+			// note: join type is not currently used in checker
+
+			tableDef, checkErr := checkTable(schema, j.Table)
+			if checkErr.Err != nil {
+				errors = append(errors, checkErr)
+				continue
+			}
+
+			tableCtx.Tables = append(tableCtx.Tables, tableDef)
+			tableCtx.Aliases = append(tableCtx.Aliases, j.TableAlias)
+
+			// check conditions with tables defined so far
+			expr, exprErrs := checkExpr(tableCtx, scope, &j.On)
+			query.Select.Joins[i].On = *expr
+			errors = append(errors, exprErrs...)
+		}
+
 		for _, f := range query.Select.Fields {
 			_, checkErr = checkField(tableCtx, f)
 			if checkErr.Err != nil {
@@ -318,6 +338,10 @@ func checkQuery(schema Schema, fragments []Query, query *Query) []CheckError {
 			expr, exprErrs := checkExpr(tableCtx, scope, &query.Select.Where)
 			query.Select.Where = *expr
 			errors = append(errors, exprErrs...)
+		}
+
+		if query.Select.Limit != nil && *query.Select.Limit < 0 {
+			errors = append(errors, CheckError{Err: fmt.Errorf("limit should not be negative")})
 		}
 
 		if len(query.Select.OrderByFields) > 0 {
